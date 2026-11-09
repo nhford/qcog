@@ -3,7 +3,8 @@ layout: default
 title: "QCOG: Quantum Circuit Optimization on GPUs"
 ---
 
-# QCOG: Quantum Circuit Optimization on GPUs
+# Title: QCOG, Quantum Circuit Optimization on GPUs
+Group Members: Noah Ford, Changxiang Gao
 
 15-618 Final Project Proposal
 
@@ -19,7 +20,7 @@ We implement the rule-based quantum optimizer from Nam et al. as sweeps of data-
 
 The bottleneck of quantum computation is largely agreed upon to be error correction, which remains a challenging software and hardware problem. The primary lever to make quantum computation and simulation more achievable thus far has been reducing the circuit size and depth such that the likelihood of error is reduced, or in other words – optimizing the circuit’s number of gates, depth of gates, etc.
 
-TODO: include image of circuit
+<img width="417" height="291" alt="image" src="https://github.com/user-attachments/assets/6e69f029-0104-4190-9cc7-5ebab25a945b" />
 
 Quantum circuits are represented by qubits which are the input and output datatype, and gates which are unitary operations which act upon one or more qubits. The width of a circuit is the number of qubits used, and the depth is the longest number of gates that need to be executed in sequence.
 
@@ -75,7 +76,7 @@ The mode of the Nam et al. round of sequences we plan to build is its “Light�
 
 The language of development would be CUDA given this is built for GPUs.
 
-The specific GPU we run on remains undecided (TODO).
+The specific GPU we run on can be flexible, but for now, we expect an A100.
 
 ## Schedule
 
