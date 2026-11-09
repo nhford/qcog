@@ -9,7 +9,7 @@ title: "QCOG: Quantum Circuit Optimization on GPUs"
 
 ## URL
 
-todo
+[https://nhford.github.io/qcog/](https://nhford.github.io/qcog/)
 
 ## Summary
 
