@@ -8,13 +8,17 @@ static void check(cudaError_t status) {
 }
 
 void optimize(Circuit &circuit) {
-  Circuit *device;
-  check(cudaMalloc(&device, sizeof(Circuit)));
+  if (circuit.num_gates == 0)
+    return;
+
+  unsigned char *device;
+  const auto bytes = circuit.bytes();
+  check(cudaMalloc(&device, bytes));
   const auto upload =
-      cudaMemcpy(device, &circuit, sizeof(Circuit), cudaMemcpyHostToDevice);
-  // Launch optimization kernels here once they are implemented.
+      cudaMemcpy(device, circuit.storage.get(), bytes, cudaMemcpyHostToDevice);
+  // Launch optimization kernels here using the device buffer and gate count.
   const auto download = upload == cudaSuccess
-      ? cudaMemcpy(&circuit, device, sizeof(Circuit), cudaMemcpyDeviceToHost)
+      ? cudaMemcpy(circuit.storage.get(), device, bytes, cudaMemcpyDeviceToHost)
       : cudaSuccess;
   const auto release = cudaFree(device);
   check(upload);
