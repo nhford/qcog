@@ -2,7 +2,7 @@
 #include "circuit.h"
 
 enum Pattern {
-  None = 0,
+  NONE = 0,
   HP_TOGGLE,
   HCNOT_CANCELLATION,
   HPC_TOGGLE,
