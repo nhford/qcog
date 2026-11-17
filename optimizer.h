@@ -1,6 +1,13 @@
 #pragma once
 #include "circuit.h"
 
+enum Pattern {
+  None = 0,
+  HP_TOGGLE,
+  HCNOT_CANCELLATION,
+  HPC_TOGGLE,
+}; 
+
 // Like hw2's renderer: load host data, setup device data, run, retrieve
 // results.
 class CudaOptimizer {
