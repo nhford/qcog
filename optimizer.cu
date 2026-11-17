@@ -28,6 +28,8 @@ void CudaOptimizer::setup(const Circuit &host) {
   ready_ = true;
 }
 
+// __device__ __inline__ CudaOptimizer::Swap
+
 /** @brief Find the start of Hadamard patterns to optimize */
 __global__ void CudaOptimizer::kernelMatchPattern() {
   int tid = threadIdx.x;
@@ -37,19 +39,107 @@ __global__ void CudaOptimizer::kernelMatchPattern() {
   }
 
   GATE initial_gate = device_gates_.gate_type[tid];
+
   if (initial_gate != GATE::HADAMARD) {
     return;
   }
 
-  GATE next_gate = device_gates_.gate_type[tid + 1];
-  GATE next_next_gate = device_gates_.gate_type[tid + 2];
+  int next_1_idx = device_gates_.next_idx[tid][0];
 
-  if (next_gate == GATE::RZ) {
-    float *next_angle = device_gates_.angle_pi[tid + 1];
-    if (next_angle[0] != 0.5)
-    /* pattern 1: H - P - H => P^ - H - P^ */
+  if (next_1_idx == -1) {
+    return;
+  }
 
-    /* pattern 2: H - P - CNOT target - P^ - H => P^ - CNOT - P */
+  GATE next_1_gate = device_gates_.gate_type[next_1_idx];
+
+  int next_2_idx = device_gates_.next_idx[next_1_idx][0];
+
+  if (next_2_idx == -1) {
+    return;
+  }
+
+  GATE next_2_gate = device_gates_.gate_type[next_2_idx];
+
+  if (next_1_gate == GATE::RZ) {
+    float *next_1_angle = device_gates_.angle_pi[next_1_idx];
+
+    /* need be -pi/2 or pi/2 */
+    if ((next_1_angle[0] != 0.5 && next_1_angle[0] != -0.5) ==
+        next_1_angle[1] != 0) {
+      return;
+    }
+    if (next_2_gate == GATE::HADAMARD) {
+      /* pattern 1: H - P - H => P^ - H - P^ */
+
+      /* update each gate */
+      device_gates_.gate_type[tid] = GATE::RZ;
+      device_gates_.angle_pi[tid][0] = -next_1_angle[0];
+      device_gates_.angle_pi[tid][1] = 0;
+
+      device_gates_.gate_type[next_1_idx] = GATE::HADAMARD;
+      device_gates_.angle_pi[next_1_idx][0] = 0;
+      device_gates_.angle_pi[next_1_idx][1] = 0;
+
+      device_gates_.gate_type[next_2_idx] = GATE::RZ;
+      device_gates_.angle_pi[next_2_idx][0] = -next_1_angle[0];
+      device_gates_.angle_pi[next_2_idx][1] = 0;
+
+      /** TODO: atomic min writes to device_owning_pattern_ */
+
+    } else if (next_2_gate == GATE::CNOT) {
+
+      /* ensure initial qubit is the target */
+      int initial_qubit = device_gates_.qubit_0[tid];
+      int target_qubit = device_gates_.qubit_1[next_2_idx];
+
+      if (initial_qubit != target_qubit) {
+        return;
+      }
+
+      int next_3_idx = device_gates_.next_idx[next_2_idx][0];
+
+      if (next_3_idx == -1) {
+        return;
+      }
+      GATE next_3_gate = device_gates_.gate_type[next_3_idx];
+
+      if (next_3_gate != GATE::RZ) {
+        return;
+      }
+
+      float *next_3_angle = device_gates_.angle_pi[next_3_idx];
+
+      /* need be -pi/2 or pi/2 */
+      if ((next_3_angle[0] != 0.5 && next_3_angle[0] != -0.5) ==
+          next_3_angle[1] != 0) {
+        return;
+      }
+
+      int next_4_idx = device_gates_.next_idx[next_3_idx][0];
+
+      if (next_4_idx == -1) {
+        return;
+      }
+      GATE next_4_gate = device_gates_.gate_type[next_4_idx];
+
+      if (next_4_gate != GATE::HADAMARD) {
+        return;
+      }
+
+      /* pattern 2: H - P - CNOT target - P^ - H => P^ - CNOT target - P */
+
+      /* update each gate */
+      device_gates_.gate_type[tid] = GATE::TOMBSTONE;
+
+      device_gates_.angle_pi[next_1_idx][0] *= -1;
+
+      device_gates_.angle_pi[next_3_idx][0] *= -1;
+
+      device_gates_.gate_type[next_4_idx] = GATE::TOMBSTONE;
+
+      /** TODO: atomic min writes to device_owning_pattern_ */
+    }
+
   } else if (next_gate == GATE::CNOT) {
     /* pattern 3: H - CNOT control - H => CNOT target
                     H - CNOT target  - H => CNOT control
