@@ -12,7 +12,7 @@ struct CircuitView {
   int *qubit_0;
   int *qubit_1;
   int *next_idx[2];
-  int *prev_idx[2];
+  int *prev_idx[2]; /** TODO: need these be initialized to -1? */
 };
 
 struct Circuit {

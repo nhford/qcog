@@ -38,6 +38,7 @@ __global__ void CudaOptimizer::kernelMatchPattern() {
     return;
   }
 
+  int initial_qubit = device_gates_.qubit_0[tid];
   GATE initial_gate = device_gates_.gate_type[tid];
 
   if (initial_gate != GATE::HADAMARD) {
@@ -89,7 +90,6 @@ __global__ void CudaOptimizer::kernelMatchPattern() {
     } else if (next_2_gate == GATE::CNOT) {
 
       /* ensure initial qubit is the target */
-      int initial_qubit = device_gates_.qubit_0[tid];
       int target_qubit = device_gates_.qubit_1[next_2_idx];
 
       if (initial_qubit != target_qubit) {
@@ -141,9 +141,56 @@ __global__ void CudaOptimizer::kernelMatchPattern() {
     }
 
   } else if (next_gate == GATE::CNOT) {
+    if (next_2_gate != GATE::HADAMARD) {
+      return;
+    }
+
+    /* ensure initial qubit is the control */
+    int control_qubit = device_gates_.qubit_1[next_1_idx];
+
+    if (initial_qubit != control_qubit) {
+      return;
+    }
+
+    int target_prev_1_idx = device_gates_.prev_idx[next_1_idx][1];
+
+    if (target_prev_1_idx == -1) {
+      return;
+    }
+
+    GATE target_prev_1_gate = device_gates_.gate_type[target_prev_1_idx];
+
+    if (target_prev_1_gate != GATE::HADAMARD) {
+      return;
+    }
+
+    int target_next_2_idx = device_gates_.next_idx[next_1_idx][1];
+
+    if (target_next_2_idx == -1) {
+      return;
+    }
+
+    GATE target_next_2_gate = device_gates_.gate_type[target_next_2_idx];
+
+    if (target_next_2_gate != GATE::HADAMARD) {
+      return;
+    }
+
     /* pattern 3: H - CNOT control - H => CNOT target
                     H - CNOT target  - H => CNOT control
       */
+
+    /* update each gate */
+    device_gates_.gate_type[tid] = GATE::TOMBSTONE;
+    device_gates_.gate_type[target_prev_1_idx] = GATE::TOMBSTONE;
+
+    int temp = device_gates_.qubit_0[next_1_idx];
+    device_gates_.qubit_0[next_1_idx] = device_gates_.qubit_1[next_1_idx];
+    device_gates_.qubit_1[next_1_idx] = temp;
+
+    device_gates_.gate_type[next_1_idx] = GATE::TOMBSTONE;
+    device_gates_.gate_type[target_next_2_gate] = GATE::TOMBSTONE;
+    /** TODO: atomic min writes to device_owning_pattern_ */
   }
 }
 
