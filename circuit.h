@@ -24,4 +24,5 @@ struct Circuit {
   std::size_t bytes() const;
 };
 
-void optimize(Circuit &circuit);
+// Construct a view into host or device storage without copying host pointers.
+CircuitView circuit_view(unsigned char *storage, int count);
