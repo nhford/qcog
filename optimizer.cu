@@ -1,7 +1,10 @@
 #include "circuit.h"
 #include "optimizer.h"
+#include <climits>
 #include <cuda_runtime.h>
 #include <stdexcept>
+#include <thrust/device_ptr.h>
+#include <thrust/fill.h>
 
 static void check(cudaError_t status) {
   if (status != cudaSuccess)
@@ -20,7 +23,13 @@ void CudaOptimizer::setup(const Circuit &host) {
     check(cudaMalloc(&device_storage_, host.bytes()));
     check(cudaMemcpy(device_storage_, host.storage.get(), host.bytes(),
                      cudaMemcpyHostToDevice));
+    /* need to initialize owning pattern to MAX value*/
     check(cudaMalloc(&device_owning_pattern_, host.num_gates * sizeof(int)));
+
+    auto begin = thrust::device_pointer_cast(device_owning_pattern_);
+    thrust::fill(begin, begin + host.num_gates, INT_MAX);
+
+    check(cudaMalloc(&device_is_selected, host.num_gates * sizeof(int)));
   }
   num_gates_ = host.num_gates;
   num_qubits_ = host.num_qubits;
@@ -72,20 +81,26 @@ __global__ void CudaOptimizer::kernelMatchPattern() {
     if (next_2_gate == GATE::HADAMARD) {
       /* pattern 1: H - P - H => P^ - H - P^ */
 
-      /* update each gate */
-      device_gates_.gate_type[tid] = GATE::RZ;
-      device_gates_.angle_pi[tid][0] = -next_1_angle[0];
-      device_gates_.angle_pi[tid][1] = 0;
+      int owns_initial = atomicMin(&device_owning_pattern_[tid], tid);
+      int owns_next_1 = atomicMin(&device_owning_pattern_[next_1_idx], tid);
+      int owns_next_2 = atomicMin(&device_owning_pattern_[next_2_idx], tid);
 
-      device_gates_.gate_type[next_1_idx] = GATE::HADAMARD;
-      device_gates_.angle_pi[next_1_idx][0] = 0;
-      device_gates_.angle_pi[next_1_idx][1] = 0;
+      /** TODO: split into helper function  */
+      /* if tid owns everything it spans, then mark tid as selected */
+      if (owns_initial >= tid && owns_next_1 >= tid && owns_next_2 >= tid) {
+        device_is_selected[tid] = Pattern::HP_TOGGLE;
 
-      device_gates_.gate_type[next_2_idx] = GATE::RZ;
-      device_gates_.angle_pi[next_2_idx][0] = -next_1_angle[0];
-      device_gates_.angle_pi[next_2_idx][1] = 0;
-
-      /** TODO: atomic min writes to device_owning_pattern_ */
+        /* need to de-select everything else */
+        if (owns_initial < INT_MAX) {
+          device_is_selected[owns_initial] = Pattern::None;
+        }
+        if (owns_next_1 < INT_MAX) {
+          device_is_selected[owns_next_1] = Pattern::None;
+        }
+        if (owns_next_2 < INT_MAX) {
+          device_is_selected[owns_next_2] = Pattern::None;
+        }
+      }
 
     } else if (next_2_gate == GATE::CNOT) {
 
@@ -128,16 +143,35 @@ __global__ void CudaOptimizer::kernelMatchPattern() {
 
       /* pattern 2: H - P - CNOT target - P^ - H => P^ - CNOT target - P */
 
-      /* update each gate */
-      device_gates_.gate_type[tid] = GATE::TOMBSTONE;
+      int owns_initial = atomicMin(&device_owning_pattern_[tid], tid);
+      int owns_next_1 = atomicMin(&device_owning_pattern_[next_1_idx], tid);
+      int owns_next_2 = atomicMin(&device_owning_pattern_[next_2_idx], tid);
+      int owns_next_3 = atomicMin(&device_owning_pattern_[next_3_idx], tid);
+      int owns_next_4 = atomicMin(&device_owning_pattern_[next_4_idx], tid);
 
-      device_gates_.angle_pi[next_1_idx][0] *= -1;
+      /** TODO: split into helper function  */
+      /* if tid owns everything it spans, then mark tid as selected */
+      if (owns_initial >= tid && owns_next_1 >= tid && owns_next_2 >= tid &&
+          owns_next_3 >= tid && owns_next_4 >= tid) {
+        device_is_selected[tid] = Pattern::HPC_TOGGLE;
 
-      device_gates_.angle_pi[next_3_idx][0] *= -1;
-
-      device_gates_.gate_type[next_4_idx] = GATE::TOMBSTONE;
-
-      /** TODO: atomic min writes to device_owning_pattern_ */
+        /* need to de-select everything else */
+        if (owns_initial < INT_MAX) {
+          device_is_selected[owns_initial] = Pattern::None;
+        }
+        if (owns_next_1 < INT_MAX) {
+          device_is_selected[owns_next_1] = Pattern::None;
+        }
+        if (owns_next_2 < INT_MAX) {
+          device_is_selected[owns_next_2] = Pattern::None;
+        }
+        if (owns_next_3 < INT_MAX) {
+          device_is_selected[owns_next_3] = Pattern::None;
+        }
+        if (owns_next_4 < INT_MAX) {
+          device_is_selected[owns_next_4] = Pattern::None;
+        }
+      }
     }
 
   } else if (next_gate == GATE::CNOT) {
@@ -179,18 +213,38 @@ __global__ void CudaOptimizer::kernelMatchPattern() {
     /* pattern 3: H - CNOT control - H => CNOT target
                     H - CNOT target  - H => CNOT control
       */
-
-    /* update each gate */
-    device_gates_.gate_type[tid] = GATE::TOMBSTONE;
-    device_gates_.gate_type[target_prev_1_idx] = GATE::TOMBSTONE;
-
-    int temp = device_gates_.qubit_0[next_1_idx];
-    device_gates_.qubit_0[next_1_idx] = device_gates_.qubit_1[next_1_idx];
-    device_gates_.qubit_1[next_1_idx] = temp;
-
-    device_gates_.gate_type[next_1_idx] = GATE::TOMBSTONE;
-    device_gates_.gate_type[target_next_2_gate] = GATE::TOMBSTONE;
     /** TODO: atomic min writes to device_owning_pattern_ */
+    int owns_initial = atomicMin(&device_owning_pattern_[tid], tid);
+    int owns_next_1 = atomicMin(&device_owning_pattern_[next_1_idx], tid);
+    int owns_next_2 = atomicMin(&device_owning_pattern_[next_2_idx], tid);
+    int owns_target_prev_1 =
+        atomicMin(&device_owning_pattern_[target_prev_1_idx], tid);
+    int owns_target_next_2 =
+        atomicMin(&device_owning_pattern_[target_next_2_idx], tid);
+
+    /** TODO: split into helper function  */
+    /* if tid owns everything it spans, then mark tid as selected */
+    if (owns_initial >= tid && owns_next_1 >= tid && owns_next_2 >= tid &&
+        owns_target_prev_1 >= tid && owns_target_next_2 >= tid) {
+      device_is_selected[tid] = Pattern::HCNOT_CANCELLATION;
+
+      /* need to de-select everything else */
+      if (owns_initial < INT_MAX) {
+        device_is_selected[owns_initial] = Pattern::None;
+      }
+      if (owns_next_1 < INT_MAX) {
+        device_is_selected[owns_next_1] = Pattern::None;
+      }
+      if (owns_next_2 < INT_MAX) {
+        device_is_selected[owns_next_2] = Pattern::None;
+      }
+      if (owns_target_prev_1 < INT_MAX) {
+        device_is_selected[owns_target_prev_1] = Pattern::None;
+      }
+      if (owns_target_next_2 < INT_MAX) {
+        device_is_selected[owns_target_next_2] = Pattern::None;
+      }
+    }
   }
 }
 
