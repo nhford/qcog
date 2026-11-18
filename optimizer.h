@@ -6,7 +6,7 @@ enum Pattern {
   HP_TOGGLE,
   HCNOT_CANCELLATION,
   HPC_TOGGLE,
-}; 
+};
 
 // Like hw2's renderer: load host data, setup device data, run, retrieve
 // results.
@@ -31,5 +31,5 @@ private:
   int *device_owning_pattern_ = nullptr;
 
   /* which gate threads are disjoint and selected */
-  int *device_is_selected = nullptr;
+  int *device_is_selected_ = nullptr;
 };

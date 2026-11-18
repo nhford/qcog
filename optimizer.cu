@@ -26,10 +26,14 @@ void CudaOptimizer::setup(const Circuit &host) {
     /* need to initialize owning pattern to MAX value*/
     check(cudaMalloc(&device_owning_pattern_, host.num_gates * sizeof(int)));
 
+    /** TODO: re-initialize these two on successive passes */
+
     auto begin = thrust::device_pointer_cast(device_owning_pattern_);
     thrust::fill(begin, begin + host.num_gates, INT_MAX);
 
-    check(cudaMalloc(&device_is_selected, host.num_gates * sizeof(int)));
+    check(cudaMalloc(&device_is_selected_, host.num_gates * sizeof(int)));
+    begin = thrust::device_pointer_cast(device_is_selected_);
+    thrust::fill(begin, begin + host.num_gates, Pattern::NONE);
   }
   num_gates_ = host.num_gates;
   num_qubits_ = host.num_qubits;
@@ -37,212 +41,165 @@ void CudaOptimizer::setup(const Circuit &host) {
   ready_ = true;
 }
 
-// __device__ __inline__ CudaOptimizer::Swap
+/** @brief Asserts rz gate angle is pi/2 || -pi/2 */
+static __device__ inline bool is_phase_gate(const float *angle) {
+  return (angle[0] == 0.5f || angle[0] == -0.5f) && angle[1] == 0.0f;
+}
 
-/** @brief Find the start of Hadamard patterns to optimize */
+//
+/** @brief Update owning_pattern & is_selected for discovered pattern match
+    Overlapping patterns give priority to the smaller starting index.
+    note: Cascading overlaps can happen if p0 conflicts with p1, and p1
+    conflicts with p2, then even if p0 and p2 are disjoint, only p0 is selected
+ */
+static __device__ inline void claim_pattern(int idx, Pattern pattern,
+                                            const int *gate_indices,
+                                            int gate_count, int *owning_pattern,
+                                            int *is_selected) {
+  atomicExch(&is_selected[idx], pattern);
+  __threadfence(); // recall MFENCE from lec; ensures selection precedes loop
+
+  for (int gate = 0; gate < gate_count; ++gate) {
+    int previous_owner = atomicMin(&owning_pattern[gate_indices[gate]], idx);
+    if (previous_owner < idx) {
+      atomicExch(&is_selected[idx], Pattern::NONE);
+    } else if (previous_owner > idx && previous_owner != INT_MAX) {
+      atomicExch(&is_selected[previous_owner], Pattern::NONE);
+    }
+  }
+}
+
+/** @brief Find the start of Hadamard patterns to optimize
+  1. H - P - H => P^ - H - P^
+  2. H - P - CNOT target - P^ - H => P^ - CNOT target - P
+  3. H - CNOT control - H => CNOT target
+     H - CNOT target  - H => CNOT control
+ */
 __global__ void match(int N, CircuitView *circuit, int *owning_pattern,
                       int *is_selected) {
-  int i = blockDim.x * blockIdx.x + threadIdx.x;
-  /* all patterns search at least three gates */
-  if (i >= N - 2) {
-    return;
-  }
+  int idx = blockDim.x * blockIdx.x + threadIdx.x;
 
-  int initial_qubit = circuit->qubit_0[i];
-  GATE initial_gate = circuit->gate_type[i];
+  /* only consider patterns starting with Hadamard at least 3 long */
+  if (idx < N - 2 && circuit->gate_type[idx] == GATE::HADAMARD) {
+    int initial_qubit = circuit->qubit_0[idx];
+    int next_1_idx = circuit->next_idx[0][idx];
+    if (next_1_idx == -1)
+      return;
 
-  if (initial_gate != GATE::HADAMARD) {
-    return;
-  }
+    GATE next_1_gate = circuit->gate_type[next_1_idx];
 
-  int next_1_idx = circuit->next_idx[i][0];
+    int next_2_idx = circuit->next_idx[0][next_1_idx];
 
-  if (next_1_idx == -1) {
-    return;
-  }
-
-  GATE next_1_gate = circuit->gate_type[next_1_idx];
-
-  int next_2_idx = circuit->next_idx[next_1_idx][0];
-
-  if (next_2_idx == -1) {
-    return;
-  }
-
-  GATE next_2_gate = circuit->gate_type[next_2_idx];
-
-  if (next_1_gate == GATE::RZ) {
-    float *next_1_angle = circuit->angle_pi[next_1_idx];
-
-    /* need be -pi/2 or pi/2 */
-    if ((next_1_angle[0] != 0.5 && next_1_angle[0] != -0.5) ==
-        next_1_angle[1] != 0) {
+    if (next_2_idx == -1) {
       return;
     }
-    if (next_2_gate == GATE::HADAMARD) {
-      /* pattern 1: H - P - H => P^ - H - P^ */
 
-      int owns_initial = atomicMin(&owning_pattern[i], i);
-      int owns_next_1 = atomicMin(&owning_pattern[next_1_idx], i);
-      int owns_next_2 = atomicMin(&owning_pattern[next_2_idx], i);
+    GATE next_2_gate = circuit->gate_type[next_2_idx];
 
-      /** TODO: split into helper function  */
-      /* if i owns everything it spans, then mark i as selected */
-      if (owns_initial >= i && owns_next_1 >= i && owns_next_2 >= i) {
-        is_selected[i] = Pattern::HP_TOGGLE;
-
-        /* need to de-select everything else */
-        if (owns_initial < INT_MAX) {
-          is_selected[owns_initial] = Pattern::NONE;
-        }
-        if (owns_next_1 < INT_MAX) {
-          is_selected[owns_next_1] = Pattern::NONE;
-        }
-        if (owns_next_2 < INT_MAX) {
-          is_selected[owns_next_2] = Pattern::NONE;
-        }
-      }
-
-    } else if (next_2_gate == GATE::CNOT) {
-
-      /* ensure initial qubit is the target */
-      int target_qubit = circuit->qubit_1[next_2_idx];
-
-      if (initial_qubit != target_qubit) {
-        return;
-      }
-
-      int next_3_idx = circuit->next_idx[next_2_idx][0];
-
-      if (next_3_idx == -1) {
-        return;
-      }
-      GATE next_3_gate = circuit->gate_type[next_3_idx];
-
-      if (next_3_gate != GATE::RZ) {
-        return;
-      }
-
-      float *next_3_angle = circuit->angle_pi[next_3_idx];
+    if (next_1_gate == GATE::RZ) {
+      float next_1_angle[] = {circuit->angle_pi[0][next_1_idx],
+                              circuit->angle_pi[1][next_1_idx]};
 
       /* need be -pi/2 or pi/2 */
-      if ((next_3_angle[0] != 0.5 && next_3_angle[0] != -0.5) ==
-          next_3_angle[1] != 0) {
+      if (!is_phase_gate(next_1_angle)) {
+        return;
+      }
+      if (next_2_gate == GATE::HADAMARD) {
+        /* pattern 1: H - P - H => P^ - H - P^ */
+
+        int gate_indices[] = {idx, next_1_idx, next_2_idx};
+        claim_pattern(idx, Pattern::HP_TOGGLE, gate_indices, 3, owning_pattern,
+                      is_selected);
+
+      } else if (next_2_gate == GATE::CNOT) {
+        /* ensure initial qubit is the target */
+        int target_qubit = circuit->qubit_1[next_2_idx];
+
+        if (initial_qubit != target_qubit) {
+          return;
+        }
+
+        int next_3_idx = circuit->next_idx[1][next_2_idx];
+
+        if (next_3_idx == -1) {
+          return;
+        }
+        GATE next_3_gate = circuit->gate_type[next_3_idx];
+
+        if (next_3_gate != GATE::RZ) {
+          return;
+        }
+
+        float next_3_angle[] = {circuit->angle_pi[0][next_3_idx],
+                                circuit->angle_pi[1][next_3_idx]};
+
+        /* need be opposite of next_1_angle */
+        if ((next_3_angle[0] != -1 * next_1_angle[0]) || next_3_angle[1] != 0) {
+          return;
+        }
+
+        int next_4_idx = circuit->next_idx[0][next_3_idx];
+
+        if (next_4_idx == -1) {
+          return;
+        }
+        GATE next_4_gate = circuit->gate_type[next_4_idx];
+
+        if (next_4_gate != GATE::HADAMARD) {
+          return;
+        }
+
+        /* pattern 2: H - P - CNOT target - P^ - H => P^ - CNOT target - P */
+
+        int gate_indices[] = {idx, next_1_idx, next_2_idx, next_3_idx,
+                              next_4_idx};
+        claim_pattern(idx, Pattern::HPC_TOGGLE, gate_indices, 5, owning_pattern,
+                      is_selected);
+      }
+
+    } else if (next_1_gate == GATE::CNOT) {
+      if (next_2_gate != GATE::HADAMARD) {
         return;
       }
 
-      int next_4_idx = circuit->next_idx[next_3_idx][0];
+      /* ensure initial qubit is the control */
+      int control_qubit = circuit->qubit_0[next_1_idx];
 
-      if (next_4_idx == -1) {
-        return;
-      }
-      GATE next_4_gate = circuit->gate_type[next_4_idx];
-
-      if (next_4_gate != GATE::HADAMARD) {
+      if (initial_qubit != control_qubit) {
         return;
       }
 
-      /* pattern 2: H - P - CNOT target - P^ - H => P^ - CNOT target - P */
+      int target_prev_1_idx = circuit->prev_idx[1][next_1_idx];
 
-      int owns_initial = atomicMin(&owning_pattern[i], i);
-      int owns_next_1 = atomicMin(&owning_pattern[next_1_idx], i);
-      int owns_next_2 = atomicMin(&owning_pattern[next_2_idx], i);
-      int owns_next_3 = atomicMin(&owning_pattern[next_3_idx], i);
-      int owns_next_4 = atomicMin(&owning_pattern[next_4_idx], i);
-
-      /** TODO: split into helper function  */
-      /* if i owns everything it spans, then mark i as selected */
-      if (owns_initial >= i && owns_next_1 >= i && owns_next_2 >= i &&
-          owns_next_3 >= i && owns_next_4 >= i) {
-        is_selected[i] = Pattern::HPC_TOGGLE;
-
-        /* need to de-select everything else */
-        if (owns_initial < INT_MAX) {
-          is_selected[owns_initial] = Pattern::NONE;
-        }
-        if (owns_next_1 < INT_MAX) {
-          is_selected[owns_next_1] = Pattern::NONE;
-        }
-        if (owns_next_2 < INT_MAX) {
-          is_selected[owns_next_2] = Pattern::NONE;
-        }
-        if (owns_next_3 < INT_MAX) {
-          is_selected[owns_next_3] = Pattern::NONE;
-        }
-        if (owns_next_4 < INT_MAX) {
-          is_selected[owns_next_4] = Pattern::NONE;
-        }
+      if (target_prev_1_idx == -1) {
+        return;
       }
-    }
 
-  } else if (next_gate == GATE::CNOT) {
-    if (next_2_gate != GATE::HADAMARD) {
-      return;
-    }
+      GATE target_prev_1_gate = circuit->gate_type[target_prev_1_idx];
 
-    /* ensure initial qubit is the control */
-    int control_qubit = circuit->qubit_1[next_1_idx];
-
-    if (initial_qubit != control_qubit) {
-      return;
-    }
-
-    int target_prev_1_idx = circuit->prev_idx[next_1_idx][1];
-
-    if (target_prev_1_idx == -1) {
-      return;
-    }
-
-    GATE target_prev_1_gate = circuit->gate_type[target_prev_1_idx];
-
-    if (target_prev_1_gate != GATE::HADAMARD) {
-      return;
-    }
-
-    int target_next_2_idx = circuit->next_idx[next_1_idx][1];
-
-    if (target_next_2_idx == -1) {
-      return;
-    }
-
-    GATE target_next_2_gate = circuit->gate_type[target_next_2_idx];
-
-    if (target_next_2_gate != GATE::HADAMARD) {
-      return;
-    }
-
-    /* pattern 3: H - CNOT control - H => CNOT target
-                    H - CNOT target  - H => CNOT control
-      */
-    /** TODO: atomic min writes to owning_pattern */
-    int owns_initial = atomicMin(&owning_pattern[i], i);
-    int owns_next_1 = atomicMin(&owning_pattern[next_1_idx], i);
-    int owns_next_2 = atomicMin(&owning_pattern[next_2_idx], i);
-    int owns_target_prev_1 = atomicMin(&owning_pattern[target_prev_1_idx], i);
-    int owns_target_next_2 = atomicMin(&owning_pattern[target_next_2_idx], i);
-
-    /** TODO: split into helper function  */
-    /* if i owns everything it spans, then mark i as selected */
-    if (owns_initial >= i && owns_next_1 >= i && owns_next_2 >= i &&
-        owns_target_prev_1 >= i && owns_target_next_2 >= i) {
-      is_selected[i] = Pattern::HCNOT_CANCELLATION;
-
-      /* need to de-select everything else */
-      if (owns_initial < INT_MAX) {
-        is_selected[owns_initial] = Pattern::NONE;
+      if (target_prev_1_gate != GATE::HADAMARD) {
+        return;
       }
-      if (owns_next_1 < INT_MAX) {
-        is_selected[owns_next_1] = Pattern::NONE;
+
+      int target_next_2_idx = circuit->next_idx[1][next_1_idx];
+
+      if (target_next_2_idx == -1) {
+        return;
       }
-      if (owns_next_2 < INT_MAX) {
-        is_selected[owns_next_2] = Pattern::NONE;
+
+      GATE target_next_2_gate = circuit->gate_type[target_next_2_idx];
+
+      if (target_next_2_gate != GATE::HADAMARD) {
+        return;
       }
-      if (owns_target_prev_1 < INT_MAX) {
-        is_selected[owns_target_prev_1] = Pattern::NONE;
-      }
-      if (owns_target_next_2 < INT_MAX) {
-        is_selected[owns_target_next_2] = Pattern::NONE;
-      }
+
+      /* pattern 3: H - CNOT control - H => CNOT target
+                      H - CNOT target  - H => CNOT control
+        */
+      int gate_indices[] = {idx, next_1_idx, next_2_idx, target_prev_1_idx,
+                            target_next_2_idx};
+      claim_pattern(idx, Pattern::HCNOT_CANCELLATION, gate_indices, 5,
+                    owning_pattern, is_selected);
     }
   }
 }

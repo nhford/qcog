@@ -4,7 +4,7 @@
 
 std::size_t Circuit::bytes() const {
   return static_cast<std::size_t>(num_gates) *
-         (sizeof(GATE) + sizeof(float) + 6 * sizeof(int));
+         (sizeof(GATE) + 2 * sizeof(float) + 6 * sizeof(int));
 }
 
 Circuit::Circuit(int count)
@@ -20,7 +20,9 @@ CircuitView circuit_view(unsigned char *storage, int count) {
   CircuitView gates{};
   gates.gate_type = reinterpret_cast<GATE *>(cursor);
   cursor += sizeof(GATE) * static_cast<std::size_t>(count);
-  gates.angle_pi = reinterpret_cast<float *>(cursor);
+  gates.angle_pi[0] = reinterpret_cast<float *>(cursor);
+  cursor += sizeof(float) * static_cast<std::size_t>(count);
+  gates.angle_pi[1] = reinterpret_cast<float *>(cursor);
   cursor += sizeof(float) * static_cast<std::size_t>(count);
 
   int **sections[] = {&gates.qubit_0, &gates.qubit_1,
