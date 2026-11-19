@@ -160,7 +160,7 @@ static __device__ inline bool match_hcnot(int idx, int next_1_idx, int next_2_id
 
   int gate_indices[] = {idx, next_1_idx, next_2_idx, target_prev_1_idx,
                         target_next_2_idx};
-  claim_pattern(idx, Pattern::HCNOT_CANCELLATION, gate_indices, 5,
+  claim_pattern(idx, Pattern::HCNOT_CANCEL, gate_indices, 5,
                 owning_pattern, is_selected);
   return true;
 }
@@ -242,7 +242,7 @@ __global__ void apply(int N, CircuitView &circuit, int *device_is_selected) {
       circuit.angle_pi[0][pconj] = p_angle;
       break;
     }
-    case Pattern::HCNOT_CANCELLATION: {
+    case Pattern::HCNOT_CANCEL: {
       int h1a = i;
       int cnot = circuit.next_idx[0][h1a];
       int h1b = circuit.prev_idx[1][cnot];

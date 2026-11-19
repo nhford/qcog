@@ -4,8 +4,12 @@
 enum Pattern {
   NONE = 0,
   HP_TOGGLE,
-  HCNOT_CANCELLATION,
+  HCNOT_CANCEL,
   HPC_TOGGLE,
+  HH_CANCEL,
+  XX_CANCEL,
+  RZ_MERGE,
+  CNOT_MERGE
 };
 
 // Like hw2's renderer: load host data, setup device data, run, retrieve
