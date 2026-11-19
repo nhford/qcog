@@ -69,6 +69,88 @@ static __device__ inline void claim_pattern(int idx, Pattern pattern,
   }
 }
 
+// Each helper checks one pattern, given the starting H and its next two gates.
+static __device__ inline bool match_hp(int idx, int next_1_idx, int next_2_idx,
+                                       const CircuitView *circuit,
+                                       int *owning_pattern, int *is_selected) {
+  if (circuit->gate_type[next_1_idx] != GATE::RZ ||
+      circuit->gate_type[next_2_idx] != GATE::HADAMARD)
+    return false;
+
+  float angle[] = {circuit->angle_pi[0][next_1_idx],
+                   circuit->angle_pi[1][next_1_idx]};
+  if (!is_phase_gate(angle))
+    return false;
+
+  int gate_indices[] = {idx, next_1_idx, next_2_idx};
+  claim_pattern(idx, Pattern::HP_TOGGLE, gate_indices, 3, owning_pattern,
+                is_selected);
+  return true;
+}
+
+static __device__ inline bool match_hpc(int idx, int next_1_idx, int next_2_idx,
+                                        const CircuitView *circuit,
+                                        int *owning_pattern, int *is_selected) {
+  if (circuit->gate_type[next_1_idx] != GATE::RZ ||
+      circuit->gate_type[next_2_idx] != GATE::CNOT)
+    return false;
+
+  float next_1_angle[] = {circuit->angle_pi[0][next_1_idx],
+                          circuit->angle_pi[1][next_1_idx]};
+  if (!is_phase_gate(next_1_angle))
+    return false;
+
+  // The starting H must be on the CNOT target.
+  if (circuit->qubit_0[idx] != circuit->qubit_1[next_2_idx])
+    return false;
+
+  int next_3_idx = circuit->next_idx[1][next_2_idx];
+  if (next_3_idx == -1 || circuit->gate_type[next_3_idx] != GATE::RZ)
+    return false;
+
+  // The second phase gate must have the opposite angle.
+  if (circuit->angle_pi[0][next_3_idx] != -1 * next_1_angle[0] ||
+      circuit->angle_pi[1][next_3_idx] != 0)
+    return false;
+
+  int next_4_idx = circuit->next_idx[0][next_3_idx];
+  if (next_4_idx == -1 || circuit->gate_type[next_4_idx] != GATE::HADAMARD)
+    return false;
+
+  int gate_indices[] = {idx, next_1_idx, next_2_idx, next_3_idx, next_4_idx};
+  claim_pattern(idx, Pattern::HPC_TOGGLE, gate_indices, 5, owning_pattern,
+                is_selected);
+  return true;
+}
+
+static __device__ inline bool match_hcnot(int idx, int next_1_idx, int next_2_idx,
+                                          const CircuitView *circuit,
+                                          int *owning_pattern, int *is_selected) {
+  if (circuit->gate_type[next_1_idx] != GATE::CNOT ||
+      circuit->gate_type[next_2_idx] != GATE::HADAMARD)
+    return false;
+
+  // The starting H must be on the CNOT control.
+  if (circuit->qubit_0[idx] != circuit->qubit_0[next_1_idx])
+    return false;
+
+  int target_prev_1_idx = circuit->prev_idx[1][next_1_idx];
+  if (target_prev_1_idx == -1 ||
+      circuit->gate_type[target_prev_1_idx] != GATE::HADAMARD)
+    return false;
+
+  int target_next_2_idx = circuit->next_idx[1][next_1_idx];
+  if (target_next_2_idx == -1 ||
+      circuit->gate_type[target_next_2_idx] != GATE::HADAMARD)
+    return false;
+
+  int gate_indices[] = {idx, next_1_idx, next_2_idx, target_prev_1_idx,
+                        target_next_2_idx};
+  claim_pattern(idx, Pattern::HCNOT_CANCELLATION, gate_indices, 5,
+                owning_pattern, is_selected);
+  return true;
+}
+
 /** @brief Find the start of Hadamard patterns to optimize
   1. H - P - H => P^ - H - P^
   2. H - P - CNOT target - P^ - H => P^ - CNOT target - P
@@ -81,127 +163,19 @@ __global__ void match(int N, CircuitView *circuit, int *owning_pattern,
 
   /* only consider patterns starting with Hadamard at least 3 long */
   if (idx < N - 2 && circuit->gate_type[idx] == GATE::HADAMARD) {
-    int initial_qubit = circuit->qubit_0[idx];
-
     int next_1_idx = circuit->next_idx[0][idx];
     if (next_1_idx == -1)
       return;
 
-    GATE next_1_gate = circuit->gate_type[next_1_idx];
-
     int next_2_idx = circuit->next_idx[0][next_1_idx];
-
-    if (next_2_idx == -1) {
+    if (next_2_idx == -1)
       return;
-    }
 
-    GATE next_2_gate = circuit->gate_type[next_2_idx];
-
-    if (next_1_gate == GATE::RZ) {
-      float next_1_angle[] = {circuit->angle_pi[0][next_1_idx],
-                              circuit->angle_pi[1][next_1_idx]};
-
-      /* need be -pi/2 or pi/2 */
-      if (!is_phase_gate(next_1_angle)) {
-        return;
-      }
-      if (next_2_gate == GATE::HADAMARD) {
-        /* pattern 1: H - P - H => P^ - H - P^ */
-
-        int gate_indices[] = {idx, next_1_idx, next_2_idx};
-        claim_pattern(idx, Pattern::HP_TOGGLE, gate_indices, 3, owning_pattern,
-                      is_selected);
-
-      } else if (next_2_gate == GATE::CNOT) {
-        /* ensure initial qubit is the target */
-        int target_qubit = circuit->qubit_1[next_2_idx];
-
-        if (initial_qubit != target_qubit) {
-          return;
-        }
-
-        int next_3_idx = circuit->next_idx[1][next_2_idx];
-
-        if (next_3_idx == -1) {
-          return;
-        }
-        GATE next_3_gate = circuit->gate_type[next_3_idx];
-
-        if (next_3_gate != GATE::RZ) {
-          return;
-        }
-
-        float next_3_angle[] = {circuit->angle_pi[0][next_3_idx],
-                                circuit->angle_pi[1][next_3_idx]};
-
-        /* need be opposite of next_1_angle */
-        if ((next_3_angle[0] != -1 * next_1_angle[0]) || next_3_angle[1] != 0) {
-          return;
-        }
-
-        int next_4_idx = circuit->next_idx[0][next_3_idx];
-
-        if (next_4_idx == -1) {
-          return;
-        }
-        GATE next_4_gate = circuit->gate_type[next_4_idx];
-
-        if (next_4_gate != GATE::HADAMARD) {
-          return;
-        }
-
-        /* pattern 2: H - P - CNOT target - P^ - H => P^ - CNOT target - P */
-
-        int gate_indices[] = {idx, next_1_idx, next_2_idx, next_3_idx,
-                              next_4_idx};
-        claim_pattern(idx, Pattern::HPC_TOGGLE, gate_indices, 5, owning_pattern,
-                      is_selected);
-      }
-
-    } else if (next_1_gate == GATE::CNOT) {
-      if (next_2_gate != GATE::HADAMARD) {
-        return;
-      }
-
-      /* ensure initial qubit is the control */
-      int control_qubit = circuit->qubit_0[next_1_idx];
-
-      if (initial_qubit != control_qubit) {
-        return;
-      }
-
-      int target_prev_1_idx = circuit->prev_idx[1][next_1_idx];
-
-      if (target_prev_1_idx == -1) {
-        return;
-      }
-
-      GATE target_prev_1_gate = circuit->gate_type[target_prev_1_idx];
-
-      if (target_prev_1_gate != GATE::HADAMARD) {
-        return;
-      }
-
-      int target_next_2_idx = circuit->next_idx[1][next_1_idx];
-
-      if (target_next_2_idx == -1) {
-        return;
-      }
-
-      GATE target_next_2_gate = circuit->gate_type[target_next_2_idx];
-
-      if (target_next_2_gate != GATE::HADAMARD) {
-        return;
-      }
-
-      /* pattern 3: H - CNOT control - H => CNOT target
-                      H - CNOT target  - H => CNOT control
-        */
-      int gate_indices[] = {idx, next_1_idx, next_2_idx, target_prev_1_idx,
-                            target_next_2_idx};
-      claim_pattern(idx, Pattern::HCNOT_CANCELLATION, gate_indices, 5,
-                    owning_pattern, is_selected);
-    }
+    if (match_hp(idx, next_1_idx, next_2_idx, circuit, owning_pattern, is_selected))
+      return;
+    if (match_hpc(idx, next_1_idx, next_2_idx, circuit, owning_pattern, is_selected))
+      return;
+    match_hcnot(idx, next_1_idx, next_2_idx, circuit, owning_pattern, is_selected);
   }
 }
 
