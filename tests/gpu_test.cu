@@ -56,6 +56,9 @@ static Circuit read_file(const std::filesystem::path &path) {
 static void equal(const Circuit &actual, const Circuit &expected) {
   require(actual.num_gates == expected.num_gates, "gate count differs");
   require(actual.num_qubits == expected.num_qubits, "qubit count differs");
+  for (int q = 0; q < actual.num_qubits; ++q)
+    require(actual.gates.qstart_indices[q] == expected.gates.qstart_indices[q],
+            "wire start differs");
   for (int i = 0; i < actual.num_gates; ++i) {
     require(actual.gates.gate_type[i] == expected.gates.gate_type[i], "gate type differs");
     require(actual.gates.qubit_0[i] == expected.gates.qubit_0[i] &&
