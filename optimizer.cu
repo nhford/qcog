@@ -193,11 +193,15 @@ __global__ void match(int N, const CircuitView &circuit, int *owning_pattern,
   }
 }
 
-__global__ void apply(int N, CircuitView &circuit, int *device_is_selected) {
+/**
+ * @brief For the chosen disjoint optimizations, update the circuit
+ * TODO: should next_index be populated for more than just the RZ/CNOT case? 
+*/
+__global__ void apply(int N, CircuitView &circuit, int *device_is_selected, int *next_index) {
   // index of the first (h) block
-  int i = blockDim.x * blockIdx.x + threadIdx.x;
+  int idx = blockDim.x * blockIdx.x + threadIdx.x;
 
-  if (i < N) {
+  if (idx < N) {
     // check if the device is selected
     switch (device_is_selected[i]) {
     case Pattern::NONE: {
@@ -205,7 +209,7 @@ __global__ void apply(int N, CircuitView &circuit, int *device_is_selected) {
     }
     case Pattern::HP_TOGGLE: {
       // switch the H to P and vice versa
-      int h1 = i;
+      int h1 = idx;
       int p = circuit.next_idx[0][h1];
       int h2 = circuit.next_idx[0][p];
 
@@ -226,7 +230,7 @@ __global__ void apply(int N, CircuitView &circuit, int *device_is_selected) {
       break;
     }
     case Pattern::HPC_TOGGLE: {
-      int h1 = i;
+      int h1 = idx;
       int p = circuit.next_idx[0][h1];
       int cnot = circuit.next_idx[0][p];
       int pconj = circuit.next_idx[1][cnot];
@@ -243,7 +247,7 @@ __global__ void apply(int N, CircuitView &circuit, int *device_is_selected) {
       break;
     }
     case Pattern::HCNOT_CANCEL: {
-      int h1a = i;
+      int h1a = idx;
       int cnot = circuit.next_idx[0][h1a];
       int h1b = circuit.prev_idx[1][cnot];
       int h2a = circuit.next_idx[0][cnot];
@@ -260,6 +264,44 @@ __global__ void apply(int N, CircuitView &circuit, int *device_is_selected) {
       int control = circuit.qubit_0[cnot];
       circuit.qubit_0[cnot] = circuit.qubit_1[cnot];
       circuit.qubit_1[cnot] = control;
+      break;
+    }
+    case Pattern:HH_CANCEL: {
+      int h1 = idx;
+      int h2 = circuit.next_idx[0][h1];
+
+      // write tombstones to the H gates
+      circuit.gate_type[h1] = GATE::TOMBSTONE;
+      circuit.gate_type[h2] = GATE::TOMBSTONE;
+      break;
+    }
+    case Pattern:XX_CANCEL: {
+      int x1 = idx;
+      int x2 = circuit.next_idx[0][x1];
+
+      // write tombstones to the X gates
+      circuit.gate_type[x1] = GATE::TOMBSTONE;
+      circuit.gate_type[x2] = GATE::TOMBSTONE;
+      break;
+    }
+    case Pattern:CNOT_CANCEL: {
+      int cx1 = idx;
+      int cx2 = next_index[idx];
+
+      circuit.gate_type[cx1] = GATE::TOMBSTONE;
+      circuit.gate_type[cx2] = GATE::TOMBSTONE;
+      break;
+    }
+    case Pattern:RZ_MERGE: {
+      int rz1 = idx;
+      int rz2 = next_index[idx];
+
+      // write the combined angle into the first index
+      circuit.angle_pi[0][rz1] += circuit.angle_pi[0][rz2];
+      circuit.angle_pi[1][rz1] += circuit.angle_pi[1][rz2];
+
+      circuit.gate_type[rz2] = GATE::TOMBSTONE;
+      break;
     }
     default: {
     }
