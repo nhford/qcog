@@ -11,6 +11,9 @@ static void check(cudaError_t status) {
     throw std::runtime_error(cudaGetErrorString(status));
 }
 
+CudaOptimizer::CudaOptimizer(int num_threads): _num_threads(num_threads) {
+}
+
 CudaOptimizer::~CudaOptimizer() {
   if (device_storage_)
     cudaFree(device_storage_);
@@ -179,26 +182,6 @@ __global__ void match(int N, CircuitView *circuit, int *owning_pattern,
   }
 }
 
-void CudaOptimizer::optimize() {
-  if (!ready_)
-    throw std::logic_error("Call setup before optimize");
-  if (!num_gates_)
-    return;
-  // Launch kernels with device_gates_ and num_gates_. All pointers in this
-  // view refer to device storage; the host circuit remains on the CPU.
-  check(cudaDeviceSynchronize());
-}
-
-void CudaOptimizer::copy_to_host(Circuit &host) const {
-  if (!ready_)
-    throw std::logic_error("Call setup before copying results");
-  if (host.num_gates != num_gates_ || host.num_qubits != num_qubits_)
-    throw std::invalid_argument("Host circuit dimensions differ from device");
-  if (num_gates_)
-    check(cudaMemcpy(host.storage.get(), device_storage_, host.bytes(),
-                     cudaMemcpyDeviceToHost));
-}
-
 __global__ void apply(int N, CircuitView *circuit, int *device_is_selected) {
   // index of the first (h) block
   int i = blockDim.x * blockIdx.x + threadIdx.x;
@@ -273,3 +256,38 @@ __global__ void apply(int N, CircuitView *circuit, int *device_is_selected) {
     }
   }
 }
+
+__global__ void
+compact(int N, CircuitView *circuit) {
+
+}
+
+void CudaOptimizer::optimize() {
+  if (!ready_)
+    throw std::logic_error("Call setup before optimize");
+  if (!num_gates_)
+    return;
+  // Launch kernels with device_gates_ and num_gates_. All pointers in this
+
+  // apply the match kernel
+  int numBlocks = (num_gates_ + _num_threads - 1) / _num_threads;
+  match<<<numBlocks, _num_threads>>>(num_gates_, &device_gates_, device_owning_pattern_, device_is_selected_);
+  // apply the apply kernels
+  apply<<<numBlocks, _num_threads>>>(num_gates_, &device_gates_, device_is_selected_);
+
+  // TODO 
+
+  // view refer to device storage; the host circuit remains on the CPU.
+  check(cudaDeviceSynchronize());
+}
+
+void CudaOptimizer::copy_to_host(Circuit &host) const {
+  if (!ready_)
+    throw std::logic_error("Call setup before copying results");
+  if (host.num_gates != num_gates_ || host.num_qubits != num_qubits_)
+    throw std::invalid_argument("Host circuit dimensions differ from device");
+  if (num_gates_)
+    check(cudaMemcpy(host.storage.get(), device_storage_, host.bytes(),
+                     cudaMemcpyDeviceToHost));
+}
+

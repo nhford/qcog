@@ -13,6 +13,7 @@ enum Pattern {
 class CudaOptimizer {
 public:
   CudaOptimizer() = default;
+  CudaOptimizer(const int num_threads);
   ~CudaOptimizer();
   CudaOptimizer(const CudaOptimizer &) = delete;
   CudaOptimizer &operator=(const CudaOptimizer &) = delete;
@@ -26,6 +27,8 @@ private:
   int num_gates_ = 0;
   int num_qubits_ = 0;
   bool ready_ = false;
+
+  int _num_threads = 0;
 
   /* which gate thread's pattern writes to this gate */
   int *device_owning_pattern_ = nullptr;
