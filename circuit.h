@@ -7,11 +7,12 @@ enum GATE { HADAMARD, CNOT, NOT, RZ, TOMBSTONE };
 
 struct CircuitView {
   GATE *gate_type;
-  float *angle_pi;
+  // angle = angle_pi[0][gate] * pi + angle_pi[1][gate] (radians)
+  float *angle_pi[2];
   int *qubit_0;
   int *qubit_1;
   int *next_idx[2];
-  int *prev_idx[2];
+  int *prev_idx[2]; /** TODO: need these be initialized to -1? */
 };
 
 struct Circuit {
@@ -24,4 +25,5 @@ struct Circuit {
   std::size_t bytes() const;
 };
 
-void optimize(Circuit &circuit);
+// Construct a view into host or device storage without copying host pointers.
+CircuitView circuit_view(unsigned char *storage, int count);

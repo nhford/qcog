@@ -1,5 +1,6 @@
 NVCC ?= nvcc
 NVCCFLAGS ?= -std=c++17
+NVCC_HOST_COMPILER ?= g++-11
 PYTHON ?= python3
 INPUT ?= benchmarks/small/tof_3.qasm
 
@@ -8,11 +9,27 @@ INPUT ?= benchmarks/small/tof_3.qasm
 
 all: qcog
 
-qcog: main.cpp optimizer.cu circuit.h
-	$(NVCC) $(NVCCFLAGS) main.cpp optimizer.cu -o $@
+qcog: main.cpp circuit.cpp qasm.cpp optimizer.cu circuit.h qasm.h optimizer.h
+	$(NVCC) -ccbin $(NVCC_HOST_COMPILER) $(NVCCFLAGS) main.cpp circuit.cpp qasm.cpp optimizer.cu -o $@
 
 run: qcog
 	./qcog -f "$(INPUT)" > output.qasm
 
 draw: run
 	$(PYTHON) draw_circuit.py output.qasm circuit.png
+
+CXX ?= c++
+.PHONY: test test-gpu test-all
+test: tests/qasm_test
+	./tests/qasm_test benchmarks/small/tof_*.qasm benchmarks/small/vqe_4.qasm
+
+tests/qasm_test: tests/qasm_test.cpp circuit.cpp qasm.cpp circuit.h qasm.h
+	$(CXX) -std=c++17 -Wall -Wextra -I. circuit.cpp qasm.cpp tests/qasm_test.cpp -o $@
+
+test-gpu: tests/gpu_test
+	./tests/gpu_test benchmarks/hadamard/*.qasm
+
+test-all: test test-gpu
+
+tests/gpu_test: tests/gpu_test.cu circuit.cpp qasm.cpp optimizer.cu circuit.h qasm.h optimizer.h
+	$(NVCC) -ccbin $(NVCC_HOST_COMPILER) $(NVCCFLAGS) -I. circuit.cpp qasm.cpp optimizer.cu tests/gpu_test.cu -o $@
