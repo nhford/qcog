@@ -268,6 +268,13 @@ __global__ void apply(int N, CircuitView &circuit, int *device_is_selected,
       int control = circuit.qubit_0[cnot];
       circuit.qubit_0[cnot] = circuit.qubit_1[cnot];
       circuit.qubit_1[cnot] = control;
+      // Link slots must continue to refer to the corresponding operand wire.
+      int next = circuit.next_idx[0][cnot];
+      circuit.next_idx[0][cnot] = circuit.next_idx[1][cnot];
+      circuit.next_idx[1][cnot] = next;
+      int prev = circuit.prev_idx[0][cnot];
+      circuit.prev_idx[0][cnot] = circuit.prev_idx[1][cnot];
+      circuit.prev_idx[1][cnot] = prev;
       break;
     }
     case Pattern:
@@ -318,49 +325,38 @@ __global__ void apply(int N, CircuitView &circuit, int *device_is_selected,
 }
 
 /**
- * @brief After gates have been tombstoned, shift gates logically by updating
- * next and prev pointers in Circuit struct
- * @pre One thread per qubit
- * @TODO: maintain start indices for each qubit
+ * @brief Unlink tombstones and rebuild wire starts and live-gate links.
+ * Gate data stays in place; physical storage packing is a separate operation.
+ * @pre One thread per qubit, after apply has completed. Tombstones retain
+ * their qubit fields and links so deleted two-qubit gates remain traversable.
  */
-__global__ void compact(int N, int num_qubits, CircuitView &circuit) {
+__global__ void relink(int N, int num_qubits, CircuitView &circuit) {
   int qubit = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (qubit < num_qubits) {
-    /** walk from start index */
     int next = circuit.qstart_indices[qubit];
+    int prev = -1;
+    int prev_operand = 0;
+    circuit.qstart_indices[qubit] = -1;
 
     while (next != -1) {
-      GATE next_gate = circuit.gate_type[next];
-
-      if (next_gate == GATE::TOMBSTONE) {
-        int next_next_idx = circuit.next_idx[0][next];
-
-        if (next_next_idx == -1) {
-          break;
-        }
-
-        /* update doubly-linked list */
-        circuit.prev_idx[0][next_next_idx] = circuit.prev_idx[0][next];
-
-        int prev = circuit.prev_idx[0][next];
+      // Use operands rather than gate type: a tombstone may have been a CNOT.
+      int operand = circuit.qubit_0[next] == qubit ? 0 : 1;
+      int successor = circuit.next_idx[operand][next];
+      if (circuit.gate_type[next] != GATE::TOMBSTONE) {
+        circuit.prev_idx[operand][next] = prev;
         if (prev != -1) {
-          circuit.next_idx[0][prev] = next_next_idx;
+          circuit.next_idx[prev_operand][prev] = next;
+        } else {
+          circuit.qstart_indices[qubit] = next;
         }
-
-        /* update start index */
-        if (next == circuit.qstart_indices[qubit]) {
-          circuit.qstart_indices[qubit] = next_next_idx;
-        }
-
-        next = next_next_idx;
-      } else if (next_gate == GATE::CNOT) {
-        int cx_idx = qubit == circuit.qubit_0[next] ? 0 : 1;
-        next = circuit.next_idx[cx_idx][next];
-      } else {
-        next = circuit.next_idx[0][next];
+        prev = next;
+        prev_operand = operand;
       }
+      next = successor;
     }
+    if (prev != -1)
+      circuit.next_idx[prev_operand][prev] = -1;
   }
 }
 
@@ -378,12 +374,16 @@ void CudaOptimizer::optimize() {
   match<<<numBlocks, _num_threads>>>(
       num_gates_, *device_gates_, device_owning_pattern_, device_is_selected_);
   check(cudaGetLastError());
+
   // apply the apply kernels
   apply<<<numBlocks, _num_threads>>>(num_gates_, *device_gates_,
                                      device_is_selected_);
   check(cudaGetLastError());
 
-  // TODO
+  int qubitBlocks = (num_qubits_ + _num_threads - 1) / _num_threads;
+  relink<<<qubitBlocks, _num_threads>>>(num_gates_, num_qubits_,
+                                        *device_gates_);
+  check(cudaGetLastError());
 
   check(cudaDeviceSynchronize());
 }
