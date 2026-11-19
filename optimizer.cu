@@ -82,6 +82,7 @@ __global__ void match(int N, CircuitView *circuit, int *owning_pattern,
   /* only consider patterns starting with Hadamard at least 3 long */
   if (idx < N - 2 && circuit->gate_type[idx] == GATE::HADAMARD) {
     int initial_qubit = circuit->qubit_0[idx];
+
     int next_1_idx = circuit->next_idx[0][idx];
     if (next_1_idx == -1)
       return;
@@ -240,42 +241,20 @@ __global__ void apply(int N, CircuitView *circuit, int *device_is_selected) {
       int p = circuit->next_idx[0][h1];
       int h2 = circuit->next_idx[0][p];
 
-      std::pair<float, float> p_angle = {circuit->angle_pi[0][p],
-                                         circuit->angle_pi[1][p]};
+      float p_angle = circuit->angle_pi[0][p];
 
       // change h1 and h2 to p_conj types
       circuit->gate_type[h1] = GATE::RZ;
-      circuit->angle_pi[0][h1] = -1 * p_angle.first;
-      circuit->angle_pi[1][h1] = -1 * p_angle.second;
+      circuit->angle_pi[0][h1] = -1 * p_angle;
+      circuit->angle_pi[1][h1] = 0;
 
       circuit->gate_type[h2] = GATE::RZ;
-      circuit->angle_pi[0][h2] = -1 * p_angle.first;
-      circuit->angle_pi[1][h2] = -1 * p_angle.second;
+      circuit->angle_pi[0][h2] = -1 * p_angle;
+      circuit->angle_pi[1][h2] = 0;
 
       // change p to h
       circuit->gate_type[p] = GATE::HADAMARD;
 
-      break;
-    }
-    case Pattern::HCNOT_CANCELLATION: {
-      int h1a = i;
-      int cnot = circuit->next_idx[0][h1a];
-      int h1b = circuit->prev_idx[0][cnot] != h1a ? circuit->prev_idx[0][cnot]
-                                                  : circuit->prev_idx[1][cnot];
-      int h2a = circuit->next_idx[0][cnot];
-      int h2b = circuit->next_idx[1][cnot];
-
-      // insert tombstone in all the H gates (not sure if other variables need
-      // to be changed)
-      circuit->gate_type[h1a] = GATE::TOMBSTONE;
-      circuit->gate_type[h1b] = GATE::TOMBSTONE;
-      circuit->gate_type[h2a] = GATE::TOMBSTONE;
-      circuit->gate_type[h2b] = GATE::TOMBSTONE;
-
-      // flip the control and target of cnot gate
-      int control = circuit->qubit_0[cnot];
-      circuit->qubit_0[cnot] = circuit->qubit_1[cnot];
-      circuit->qubit_1[cnot] = control;
       break;
     }
     case Pattern::HPC_TOGGLE: {
@@ -293,9 +272,27 @@ __global__ void apply(int N, CircuitView *circuit, int *device_is_selected) {
       std::pair<float, float> p_angle = {circuit->angle_pi[0][p],
                                          circuit->angle_pi[1][p]};
       circuit->angle_pi[0][p] = -1 * p_angle.first;
-      circuit->angle_pi[1][p] = -1 * p_angle.second;
       circuit->angle_pi[0][pconj] = p_angle.first;
-      circuit->angle_pi[1][pconj] = p_angle.second;
+      break;
+    }
+    case Pattern::HCNOT_CANCELLATION: {
+      int h1a = i;
+      int cnot = circuit->next_idx[0][h1a];
+      int h1b = circuit->prev_idx[1][cnot];
+      int h2a = circuit->next_idx[0][cnot];
+      int h2b = circuit->next_idx[1][cnot];
+
+      // insert tombstone in all the H gates (not sure if other variables need
+      // to be changed)
+      circuit->gate_type[h1a] = GATE::TOMBSTONE;
+      circuit->gate_type[h1b] = GATE::TOMBSTONE;
+      circuit->gate_type[h2a] = GATE::TOMBSTONE;
+      circuit->gate_type[h2b] = GATE::TOMBSTONE;
+
+      // flip the control and target of cnot gate
+      int control = circuit->qubit_0[cnot];
+      circuit->qubit_0[cnot] = circuit->qubit_1[cnot];
+      circuit->qubit_1[cnot] = control;
     }
     default: {
     }
