@@ -35,7 +35,16 @@ python3 benchmarks/hadamard/check.py
 The checker uses only Python's standard library. It simulates every basis
 input and compares the complete operators up to one common global phase.
 
-Once the optimizer is connected to its kernels, build and test its output:
+Run the CUDA test suite, including every fixture and its expected output:
+
+```sh
+make test-gpu
+```
+
+This checks uploads/downloads and compares the optimized circuit's gate types,
+operands, angles, and wire links with the reference on each visible GPU.
+
+To additionally check the output's full quantum operator, build and run:
 
 ```sh
 make
@@ -52,6 +61,4 @@ To inspect a single case:
 ./qcog -f benchmarks/hadamard/hpc_positive.qasm
 ```
 
-Currently `CudaOptimizer::optimize()` does not launch `match` or `apply`, so
-the executable checks should fail the positive cases until that is implemented.
 Fixture-only checks do not exercise CUDA or validate kernel selection behavior.

@@ -7,7 +7,7 @@ enum GATE { HADAMARD, CNOT, NOT, RZ, TOMBSTONE };
 
 struct CircuitView {
   GATE *gate_type;
-  /* store pi component and real component of the angle */
+  // angle = angle_pi[0][gate] * pi + angle_pi[1][gate] (radians)
   float *angle_pi[2];
   int *qubit_0;
   int *qubit_1;

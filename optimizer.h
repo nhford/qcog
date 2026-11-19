@@ -23,12 +23,13 @@ public:
 
 private:
   unsigned char *device_storage_ = nullptr;
-  CircuitView device_gates_{};
+  // The view itself lives on the GPU so kernels can receive it by reference.
+  CircuitView *device_gates_ = nullptr;
   int num_gates_ = 0;
   int num_qubits_ = 0;
   bool ready_ = false;
 
-  int _num_threads = 0;
+  int _num_threads = 256;
 
   /* which gate thread's pattern writes to this gate */
   int *device_owning_pattern_ = nullptr;

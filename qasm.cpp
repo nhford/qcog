@@ -14,41 +14,69 @@
 
 namespace {
 constexpr double pi = 3.14159265358979323846;
+// Represent angles as coefficient * pi + a remainder in radians.
+struct AngleParts {
+  double coefficient = 0;
+  double remainder = 0;
+  double radians() const { return coefficient * pi + remainder; }
+};
+
 // Small arithmetic expression evaluator, replacing Rust's meval dependency.
 class Angle {
   std::string text;
   std::size_t pos = 0;
   void space() { while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) ++pos; }
   bool take(char c) { space(); if (pos < text.size() && text[pos] == c) { ++pos; return true; } return false; }
-  double atom() {
+  AngleParts atom() {
     if (take('+')) return atom();
-    if (take('-')) return -atom();
-    if (take('(')) { double v = sum(); if (!take(')')) throw std::runtime_error("Missing angle parenthesis"); return v; }
+    if (take('-')) { auto v = atom(); return {-v.coefficient, -v.remainder}; }
+    if (take('(')) { auto v = sum(); if (!take(')')) throw std::runtime_error("Missing angle parenthesis"); return v; }
     space();
-    if (text.compare(pos, 2, "pi") == 0 || text.compare(pos, 2, "PI") == 0) { pos += 2; return pi; }
-    if (text.compare(pos, std::string("π").size(), "π") == 0) { pos += std::string("π").size(); return pi; }
+    if (text.compare(pos, 2, "pi") == 0 || text.compare(pos, 2, "PI") == 0) { pos += 2; return {1, 0}; }
+    if (text.compare(pos, std::string("π").size(), "π") == 0) { pos += std::string("π").size(); return {1, 0}; }
     std::size_t used = 0;
-    double v = std::stod(text.substr(pos), &used); pos += used; return v;
+    double v = std::stod(text.substr(pos), &used); pos += used; return {0, v};
   }
-  double product() {
-    double v = atom();
-    for (;;) { if (take('*')) v *= atom(); else if (take('/')) { double d = atom(); if (d == 0) throw std::runtime_error("Zero angle divisor"); v /= d; } else return v; }
+  AngleParts product() {
+    auto v = atom();
+    for (;;) {
+      if (take('*')) {
+        const auto rhs = atom();
+        // Fold pi squared into the numeric remainder.
+        v = {v.coefficient * rhs.remainder + v.remainder * rhs.coefficient,
+             v.remainder * rhs.remainder + v.coefficient * rhs.coefficient * pi * pi};
+      } else if (take('/')) {
+        const auto rhs = atom();
+        const double divisor = rhs.radians();
+        if (divisor == 0) throw std::runtime_error("Zero angle divisor");
+        if (rhs.coefficient == 0)
+          v = {v.coefficient / divisor, v.remainder / divisor};
+        else
+          // A symbolic denominator may not be linear in pi.
+          v = {0, v.radians() / divisor};
+      } else return v;
+    }
   }
-  double sum() {
-    double v = product();
-    for (;;) { if (take('+')) v += product(); else if (take('-')) v -= product(); else return v; }
+  AngleParts sum() {
+    auto v = product();
+    for (;;) {
+      if (take('+')) { const auto rhs = product(); v.coefficient += rhs.coefficient; v.remainder += rhs.remainder; }
+      else if (take('-')) { const auto rhs = product(); v.coefficient -= rhs.coefficient; v.remainder -= rhs.remainder; }
+      else return v;
+    }
   }
 public:
   explicit Angle(std::string value) : text(std::move(value)) {}
-  float parse() {
-    double value = sum() / pi; space();
-    float result = static_cast<float>(value);
-    if (pos != text.size() || !std::isfinite(result)) throw std::runtime_error("Invalid rotation angle: " + text);
-    return result;
+  AngleParts parse() {
+    const auto value = sum(); space();
+    if (pos != text.size() ||
+        !std::isfinite(static_cast<float>(value.coefficient)) ||
+        !std::isfinite(static_cast<float>(value.remainder)))
+      throw std::runtime_error("Invalid rotation angle: " + text);
+    return value;
   }
 };
 }
-static float parse_angle_pi(const std::string &angle) { return Angle(angle).parse(); }
 
 static std::string clean_line(std::string line) {
   line.erase(std::min(line.size(), line.find("//")));
@@ -148,14 +176,14 @@ Circuit read_circuit(std::istream &input) {
       throw std::runtime_error("Unsupported QASM operation: " + name);
 
     auto operands = clean_line(line.substr(name.size()));
-    float angle = 0;
+    AngleParts angle{};
     if (name == "rz") {
       if (operands.empty() || operands.front() != '(')
         throw std::runtime_error("RZ requires an angle");
       const auto end = operands.rfind(')');
       if (end == std::string::npos)
         throw std::runtime_error("Missing RZ closing parenthesis");
-      angle = parse_angle_pi(operands.substr(1, end - 1));
+      angle = Angle(operands.substr(1, end - 1)).parse();
       operands = clean_line(operands.substr(end + 1));
     }
     const auto comma = operands.find(',');
@@ -170,7 +198,8 @@ Circuit read_circuit(std::istream &input) {
 
     circuit.gates.gate_type[i] = name == "h" ? HADAMARD : name == "x" ? NOT :
                                  name == "cx" ? CNOT : RZ;
-    circuit.gates.angle_pi[i] = angle;
+    circuit.gates.angle_pi[0][i] = static_cast<float>(angle.coefficient);
+    circuit.gates.angle_pi[1][i] = static_cast<float>(angle.remainder);
     circuit.gates.qubit_0[i] = q0;
     circuit.gates.qubit_1[i] = q1;
     const int qubits[] = {q0, q1};
@@ -205,7 +234,14 @@ void write_circuit(std::ostream &output, const Circuit &circuit) {
     case HADAMARD: output << "h"; break;
     case NOT: output << "x"; break;
     case CNOT: output << "cx"; break;
-    case RZ: output << "rz(" << circuit.gates.angle_pi[i] << "*pi)"; break;
+    case RZ:
+      output << "rz(" << circuit.gates.angle_pi[0][i] << "*pi";
+      if (circuit.gates.angle_pi[1][i] != 0) {
+        if (circuit.gates.angle_pi[1][i] > 0) output << '+';
+        output << circuit.gates.angle_pi[1][i];
+      }
+      output << ')';
+      break;
     case TOMBSTONE: continue;
     }
     output << " q[" << circuit.gates.qubit_0[i] << ']';

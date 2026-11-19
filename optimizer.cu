@@ -12,9 +12,17 @@ static void check(cudaError_t status) {
 }
 
 CudaOptimizer::CudaOptimizer(int num_threads): _num_threads(num_threads) {
+  if (num_threads <= 0)
+    throw std::invalid_argument("Thread count must be positive");
 }
 
 CudaOptimizer::~CudaOptimizer() {
+  if (device_gates_)
+    cudaFree(device_gates_);
+  if (device_owning_pattern_)
+    cudaFree(device_owning_pattern_);
+  if (device_is_selected_)
+    cudaFree(device_is_selected_);
   if (device_storage_)
     cudaFree(device_storage_);
 }
@@ -40,7 +48,10 @@ void CudaOptimizer::setup(const Circuit &host) {
   }
   num_gates_ = host.num_gates;
   num_qubits_ = host.num_qubits;
-  device_gates_ = circuit_view(device_storage_, num_gates_);
+  const CircuitView view = circuit_view(device_storage_, num_gates_);
+  check(cudaMalloc(&device_gates_, sizeof(CircuitView)));
+  check(cudaMemcpy(device_gates_, &view, sizeof(CircuitView),
+                   cudaMemcpyHostToDevice));
   ready_ = true;
 }
 
@@ -74,14 +85,14 @@ static __device__ inline void claim_pattern(int idx, Pattern pattern,
 
 // Each helper checks one pattern, given the starting H and its next two gates.
 static __device__ inline bool match_hp(int idx, int next_1_idx, int next_2_idx,
-                                       const CircuitView *circuit,
+                                       const CircuitView &circuit,
                                        int *owning_pattern, int *is_selected) {
-  if (circuit->gate_type[next_1_idx] != GATE::RZ ||
-      circuit->gate_type[next_2_idx] != GATE::HADAMARD)
+  if (circuit.gate_type[next_1_idx] != GATE::RZ ||
+      circuit.gate_type[next_2_idx] != GATE::HADAMARD)
     return false;
 
-  float angle[] = {circuit->angle_pi[0][next_1_idx],
-                   circuit->angle_pi[1][next_1_idx]};
+  float angle[] = {circuit.angle_pi[0][next_1_idx],
+                   circuit.angle_pi[1][next_1_idx]};
   if (!is_phase_gate(angle))
     return false;
 
@@ -92,32 +103,32 @@ static __device__ inline bool match_hp(int idx, int next_1_idx, int next_2_idx,
 }
 
 static __device__ inline bool match_hpc(int idx, int next_1_idx, int next_2_idx,
-                                        const CircuitView *circuit,
+                                        const CircuitView &circuit,
                                         int *owning_pattern, int *is_selected) {
-  if (circuit->gate_type[next_1_idx] != GATE::RZ ||
-      circuit->gate_type[next_2_idx] != GATE::CNOT)
+  if (circuit.gate_type[next_1_idx] != GATE::RZ ||
+      circuit.gate_type[next_2_idx] != GATE::CNOT)
     return false;
 
-  float next_1_angle[] = {circuit->angle_pi[0][next_1_idx],
-                          circuit->angle_pi[1][next_1_idx]};
+  float next_1_angle[] = {circuit.angle_pi[0][next_1_idx],
+                          circuit.angle_pi[1][next_1_idx]};
   if (!is_phase_gate(next_1_angle))
     return false;
 
   // The starting H must be on the CNOT target.
-  if (circuit->qubit_0[idx] != circuit->qubit_1[next_2_idx])
+  if (circuit.qubit_0[idx] != circuit.qubit_1[next_2_idx])
     return false;
 
-  int next_3_idx = circuit->next_idx[1][next_2_idx];
-  if (next_3_idx == -1 || circuit->gate_type[next_3_idx] != GATE::RZ)
+  int next_3_idx = circuit.next_idx[1][next_2_idx];
+  if (next_3_idx == -1 || circuit.gate_type[next_3_idx] != GATE::RZ)
     return false;
 
   // The second phase gate must have the opposite angle.
-  if (circuit->angle_pi[0][next_3_idx] != -1 * next_1_angle[0] ||
-      circuit->angle_pi[1][next_3_idx] != 0)
+  if (circuit.angle_pi[0][next_3_idx] != -1 * next_1_angle[0] ||
+      circuit.angle_pi[1][next_3_idx] != 0)
     return false;
 
-  int next_4_idx = circuit->next_idx[0][next_3_idx];
-  if (next_4_idx == -1 || circuit->gate_type[next_4_idx] != GATE::HADAMARD)
+  int next_4_idx = circuit.next_idx[0][next_3_idx];
+  if (next_4_idx == -1 || circuit.gate_type[next_4_idx] != GATE::HADAMARD)
     return false;
 
   int gate_indices[] = {idx, next_1_idx, next_2_idx, next_3_idx, next_4_idx};
@@ -127,24 +138,24 @@ static __device__ inline bool match_hpc(int idx, int next_1_idx, int next_2_idx,
 }
 
 static __device__ inline bool match_hcnot(int idx, int next_1_idx, int next_2_idx,
-                                          const CircuitView *circuit,
+                                          const CircuitView &circuit,
                                           int *owning_pattern, int *is_selected) {
-  if (circuit->gate_type[next_1_idx] != GATE::CNOT ||
-      circuit->gate_type[next_2_idx] != GATE::HADAMARD)
+  if (circuit.gate_type[next_1_idx] != GATE::CNOT ||
+      circuit.gate_type[next_2_idx] != GATE::HADAMARD)
     return false;
 
   // The starting H must be on the CNOT control.
-  if (circuit->qubit_0[idx] != circuit->qubit_0[next_1_idx])
+  if (circuit.qubit_0[idx] != circuit.qubit_0[next_1_idx])
     return false;
 
-  int target_prev_1_idx = circuit->prev_idx[1][next_1_idx];
+  int target_prev_1_idx = circuit.prev_idx[1][next_1_idx];
   if (target_prev_1_idx == -1 ||
-      circuit->gate_type[target_prev_1_idx] != GATE::HADAMARD)
+      circuit.gate_type[target_prev_1_idx] != GATE::HADAMARD)
     return false;
 
-  int target_next_2_idx = circuit->next_idx[1][next_1_idx];
+  int target_next_2_idx = circuit.next_idx[1][next_1_idx];
   if (target_next_2_idx == -1 ||
-      circuit->gate_type[target_next_2_idx] != GATE::HADAMARD)
+      circuit.gate_type[target_next_2_idx] != GATE::HADAMARD)
     return false;
 
   int gate_indices[] = {idx, next_1_idx, next_2_idx, target_prev_1_idx,
@@ -160,17 +171,17 @@ static __device__ inline bool match_hcnot(int idx, int next_1_idx, int next_2_id
   3. H - CNOT control - H => CNOT target
      H - CNOT target  - H => CNOT control
  */
-__global__ void match(int N, CircuitView *circuit, int *owning_pattern,
+__global__ void match(int N, const CircuitView &circuit, int *owning_pattern,
                       int *is_selected) {
   int idx = blockDim.x * blockIdx.x + threadIdx.x;
 
   /* only consider patterns starting with Hadamard at least 3 long */
-  if (idx < N - 2 && circuit->gate_type[idx] == GATE::HADAMARD) {
-    int next_1_idx = circuit->next_idx[0][idx];
+  if (idx < N - 2 && circuit.gate_type[idx] == GATE::HADAMARD) {
+    int next_1_idx = circuit.next_idx[0][idx];
     if (next_1_idx == -1)
       return;
 
-    int next_2_idx = circuit->next_idx[0][next_1_idx];
+    int next_2_idx = circuit.next_idx[0][next_1_idx];
     if (next_2_idx == -1)
       return;
 
@@ -182,7 +193,7 @@ __global__ void match(int N, CircuitView *circuit, int *owning_pattern,
   }
 }
 
-__global__ void apply(int N, CircuitView *circuit, int *device_is_selected) {
+__global__ void apply(int N, CircuitView &circuit, int *device_is_selected) {
   // index of the first (h) block
   int i = blockDim.x * blockIdx.x + threadIdx.x;
 
@@ -195,61 +206,60 @@ __global__ void apply(int N, CircuitView *circuit, int *device_is_selected) {
     case Pattern::HP_TOGGLE: {
       // switch the H to P and vice versa
       int h1 = i;
-      int p = circuit->next_idx[0][h1];
-      int h2 = circuit->next_idx[0][p];
+      int p = circuit.next_idx[0][h1];
+      int h2 = circuit.next_idx[0][p];
 
-      float p_angle = circuit->angle_pi[0][p];
+      float p_angle = circuit.angle_pi[0][p];
 
       // change h1 and h2 to p_conj types
-      circuit->gate_type[h1] = GATE::RZ;
-      circuit->angle_pi[0][h1] = -1 * p_angle;
-      circuit->angle_pi[1][h1] = 0;
+      circuit.gate_type[h1] = GATE::RZ;
+      circuit.angle_pi[0][h1] = -1 * p_angle;
+      circuit.angle_pi[1][h1] = 0;
 
-      circuit->gate_type[h2] = GATE::RZ;
-      circuit->angle_pi[0][h2] = -1 * p_angle;
-      circuit->angle_pi[1][h2] = 0;
+      circuit.gate_type[h2] = GATE::RZ;
+      circuit.angle_pi[0][h2] = -1 * p_angle;
+      circuit.angle_pi[1][h2] = 0;
 
       // change p to h
-      circuit->gate_type[p] = GATE::HADAMARD;
+      circuit.gate_type[p] = GATE::HADAMARD;
 
       break;
     }
     case Pattern::HPC_TOGGLE: {
       int h1 = i;
-      int p = circuit->next_idx[0][h1];
-      int cnot = circuit->next_idx[0][p];
-      int pconj = circuit->next_idx[1][cnot];
-      int h2 = circuit->next_idx[0][pconj];
+      int p = circuit.next_idx[0][h1];
+      int cnot = circuit.next_idx[0][p];
+      int pconj = circuit.next_idx[1][cnot];
+      int h2 = circuit.next_idx[0][pconj];
 
       // tombstone the H gates
-      circuit->gate_type[h1] = GATE::TOMBSTONE;
-      circuit->gate_type[h2] = GATE::TOMBSTONE;
+      circuit.gate_type[h1] = GATE::TOMBSTONE;
+      circuit.gate_type[h2] = GATE::TOMBSTONE;
 
       // flip both p and pconj
-      std::pair<float, float> p_angle = {circuit->angle_pi[0][p],
-                                         circuit->angle_pi[1][p]};
-      circuit->angle_pi[0][p] = -1 * p_angle.first;
-      circuit->angle_pi[0][pconj] = p_angle.first;
+      float p_angle = circuit.angle_pi[0][p];
+      circuit.angle_pi[0][p] = -1 * p_angle;
+      circuit.angle_pi[0][pconj] = p_angle;
       break;
     }
     case Pattern::HCNOT_CANCELLATION: {
       int h1a = i;
-      int cnot = circuit->next_idx[0][h1a];
-      int h1b = circuit->prev_idx[1][cnot];
-      int h2a = circuit->next_idx[0][cnot];
-      int h2b = circuit->next_idx[1][cnot];
+      int cnot = circuit.next_idx[0][h1a];
+      int h1b = circuit.prev_idx[1][cnot];
+      int h2a = circuit.next_idx[0][cnot];
+      int h2b = circuit.next_idx[1][cnot];
 
       // insert tombstone in all the H gates (not sure if other variables need
       // to be changed)
-      circuit->gate_type[h1a] = GATE::TOMBSTONE;
-      circuit->gate_type[h1b] = GATE::TOMBSTONE;
-      circuit->gate_type[h2a] = GATE::TOMBSTONE;
-      circuit->gate_type[h2b] = GATE::TOMBSTONE;
+      circuit.gate_type[h1a] = GATE::TOMBSTONE;
+      circuit.gate_type[h1b] = GATE::TOMBSTONE;
+      circuit.gate_type[h2a] = GATE::TOMBSTONE;
+      circuit.gate_type[h2b] = GATE::TOMBSTONE;
 
       // flip the control and target of cnot gate
-      int control = circuit->qubit_0[cnot];
-      circuit->qubit_0[cnot] = circuit->qubit_1[cnot];
-      circuit->qubit_1[cnot] = control;
+      int control = circuit.qubit_0[cnot];
+      circuit.qubit_0[cnot] = circuit.qubit_1[cnot];
+      circuit.qubit_1[cnot] = control;
     }
     default: {
     }
@@ -258,7 +268,7 @@ __global__ void apply(int N, CircuitView *circuit, int *device_is_selected) {
 }
 
 __global__ void
-compact(int N, CircuitView *circuit) {
+compact(int N, CircuitView &circuit) {
 
 }
 
@@ -267,17 +277,19 @@ void CudaOptimizer::optimize() {
     throw std::logic_error("Call setup before optimize");
   if (!num_gates_)
     return;
-  // Launch kernels with device_gates_ and num_gates_. All pointers in this
+  // Bind kernel references to the device-resident view. Its arrays also
+  // reside on the GPU; dereferencing here binds a reference without a host read.
 
   // apply the match kernel
   int numBlocks = (num_gates_ + _num_threads - 1) / _num_threads;
-  match<<<numBlocks, _num_threads>>>(num_gates_, &device_gates_, device_owning_pattern_, device_is_selected_);
+  match<<<numBlocks, _num_threads>>>(num_gates_, *device_gates_, device_owning_pattern_, device_is_selected_);
+  check(cudaGetLastError());
   // apply the apply kernels
-  apply<<<numBlocks, _num_threads>>>(num_gates_, &device_gates_, device_is_selected_);
+  apply<<<numBlocks, _num_threads>>>(num_gates_, *device_gates_, device_is_selected_);
+  check(cudaGetLastError());
 
   // TODO 
 
-  // view refer to device storage; the host circuit remains on the CPU.
   check(cudaDeviceSynchronize());
 }
 
