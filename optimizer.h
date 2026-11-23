@@ -40,4 +40,7 @@ private:
 
   /* which gate threads are disjoint and selected */
   int *device_is_selected_ = nullptr;
+
+  /* for commutating updates (Rz, CNOT): must store where apply */
+  int *next_idx = nullptr;
 };
