@@ -1,6 +1,6 @@
 #include "circuit.h"
-#include "qasm.h"
 #include "optimizer.h"
+#include "qasm.h"
 #include <fstream>
 #include <iostream>
 #include <stdexcept>

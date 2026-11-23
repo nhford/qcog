@@ -128,9 +128,26 @@ static int calculate_qubit_index(
 
 Circuit read_circuit(std::istream &input) {
   int count = 0;
+  int qubit_count = 0;
+  std::unordered_map<std::string, std::pair<int, int>> registers;
   std::string line;
   while (std::getline(input, line)) {
-    const auto name = operation(clean_line(line));
+    line = clean_line(line);
+    const auto name = operation(line);
+    if (name == "qreg") {
+      if (count) throw std::runtime_error("qreg declarations must precede gates");
+      if (line.back() != ';')
+        throw std::runtime_error("Missing QASM semicolon: " + line);
+      line.pop_back();
+      const auto reg = parse_register_operand(line.substr(name.size()));
+      const int size = reg.index;
+      if (size == 0) throw std::runtime_error("Quantum register must be nonempty");
+      if (size > std::numeric_limits<int>::max() - qubit_count)
+        throw std::runtime_error("Too many qubits");
+      if (!registers.emplace(reg.name, std::make_pair(qubit_count, size)).second)
+        throw std::runtime_error("Duplicate quantum register");
+      qubit_count += size;
+    }
     if (name == "h" || name == "x" || name == "cx" || name == "rz") {
       if (count == std::numeric_limits<int>::max())
         throw std::runtime_error("Circuit exceeds the gate index range");
@@ -144,9 +161,10 @@ Circuit read_circuit(std::istream &input) {
   if (!input)
     throw std::runtime_error("Unable to rewind circuit");
 
-  Circuit circuit(count);
-  std::vector<int> last_gate, last_operand;
-  std::unordered_map<std::string, std::pair<int, int>> registers;
+  if (qubit_count == 0)
+    throw std::runtime_error("Missing qreg declaration");
+  Circuit circuit(count, qubit_count);
+  std::vector<int> last_gate(qubit_count, -1), last_operand(qubit_count, -1);
   int i = 0;
   while (std::getline(input, line)) {
     line = clean_line(line);
@@ -159,17 +177,7 @@ Circuit read_circuit(std::istream &input) {
     line.pop_back();
     const auto name = operation(line);
     if (name == "qreg") {
-      if (i) throw std::runtime_error("qreg declarations must precede gates");
-      const auto reg = parse_register_operand(line.substr(name.size()));
-      const int size = reg.index;
-      if (size == 0) throw std::runtime_error("Quantum register must be nonempty");
-      if (size > std::numeric_limits<int>::max() - circuit.num_qubits)
-        throw std::runtime_error("Too many qubits");
-      if (!registers.emplace(reg.name, std::make_pair(circuit.num_qubits, size)).second)
-        throw std::runtime_error("Duplicate quantum register");
-      circuit.num_qubits += size;
-      last_gate.resize(circuit.num_qubits, -1);
-      last_operand.resize(circuit.num_qubits, -1);
+      // Register sizes and offsets were collected before allocating storage.
       continue;
     }
     if (name != "h" && name != "x" && name != "cx" && name != "rz")
@@ -213,13 +221,13 @@ Circuit read_circuit(std::istream &input) {
       circuit.gates.prev_idx[operand][i] = previous;
       if (previous >= 0)
         circuit.gates.next_idx[last_operand[q]][previous] = i;
+      else
+        circuit.gates.qstart_indices[q] = i;
       last_gate[q] = i;
       last_operand[q] = operand;
     }
     ++i;
   }
-  if (circuit.num_qubits == 0)
-    throw std::runtime_error("Missing qreg declaration");
   if (input.bad() || i != circuit.num_gates)
     throw std::runtime_error("Unable to read all gates");
   return circuit;

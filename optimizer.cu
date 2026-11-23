@@ -11,7 +11,7 @@ static void check(cudaError_t status) {
     throw std::runtime_error(cudaGetErrorString(status));
 }
 
-CudaOptimizer::CudaOptimizer(int num_threads): _num_threads(num_threads) {
+CudaOptimizer::CudaOptimizer(int num_threads) : _num_threads(num_threads) {
   if (num_threads <= 0)
     throw std::invalid_argument("Thread count must be positive");
 }
@@ -137,9 +137,9 @@ static __device__ inline bool match_hpc(int idx, int next_1_idx, int next_2_idx,
   return true;
 }
 
-static __device__ inline bool match_hcnot(int idx, int next_1_idx, int next_2_idx,
-                                          const CircuitView &circuit,
-                                          int *owning_pattern, int *is_selected) {
+static __device__ inline bool
+match_hcnot(int idx, int next_1_idx, int next_2_idx, const CircuitView &circuit,
+            int *owning_pattern, int *is_selected) {
   if (circuit.gate_type[next_1_idx] != GATE::CNOT ||
       circuit.gate_type[next_2_idx] != GATE::HADAMARD)
     return false;
@@ -160,8 +160,8 @@ static __device__ inline bool match_hcnot(int idx, int next_1_idx, int next_2_id
 
   int gate_indices[] = {idx, next_1_idx, next_2_idx, target_prev_1_idx,
                         target_next_2_idx};
-  claim_pattern(idx, Pattern::HCNOT_CANCEL, gate_indices, 5,
-                owning_pattern, is_selected);
+  claim_pattern(idx, Pattern::HCNOT_CANCEL, gate_indices, 5, owning_pattern,
+                is_selected);
   return true;
 }
 
@@ -185,19 +185,27 @@ __global__ void match(int N, const CircuitView &circuit, int *owning_pattern,
     if (next_2_idx == -1)
       return;
 
-    if (match_hp(idx, next_1_idx, next_2_idx, circuit, owning_pattern, is_selected))
+    if (match_hp(idx, next_1_idx, next_2_idx, circuit, owning_pattern,
+                 is_selected))
       return;
-    if (match_hpc(idx, next_1_idx, next_2_idx, circuit, owning_pattern, is_selected))
+    if (match_hpc(idx, next_1_idx, next_2_idx, circuit, owning_pattern,
+                  is_selected))
       return;
-    match_hcnot(idx, next_1_idx, next_2_idx, circuit, owning_pattern, is_selected);
+    match_hcnot(idx, next_1_idx, next_2_idx, circuit, owning_pattern,
+                is_selected);
   }
 }
 
-__global__ void apply(int N, CircuitView &circuit, int *device_is_selected) {
+/**
+ * @brief For the chosen disjoint optimizations, update the circuit
+ * TODO: should next_index be populated for more than just the RZ/CNOT case?
+ */
+__global__ void apply(int N, CircuitView &circuit, int *device_is_selected,
+                      int *next_index) {
   // index of the first (h) block
-  int i = blockDim.x * blockIdx.x + threadIdx.x;
+  int idx = blockDim.x * blockIdx.x + threadIdx.x;
 
-  if (i < N) {
+  if (idx < N) {
     // check if the device is selected
     switch (device_is_selected[i]) {
     case Pattern::NONE: {
@@ -205,7 +213,7 @@ __global__ void apply(int N, CircuitView &circuit, int *device_is_selected) {
     }
     case Pattern::HP_TOGGLE: {
       // switch the H to P and vice versa
-      int h1 = i;
+      int h1 = idx;
       int p = circuit.next_idx[0][h1];
       int h2 = circuit.next_idx[0][p];
 
@@ -226,7 +234,7 @@ __global__ void apply(int N, CircuitView &circuit, int *device_is_selected) {
       break;
     }
     case Pattern::HPC_TOGGLE: {
-      int h1 = i;
+      int h1 = idx;
       int p = circuit.next_idx[0][h1];
       int cnot = circuit.next_idx[0][p];
       int pconj = circuit.next_idx[1][cnot];
@@ -243,7 +251,7 @@ __global__ void apply(int N, CircuitView &circuit, int *device_is_selected) {
       break;
     }
     case Pattern::HCNOT_CANCEL: {
-      int h1a = i;
+      int h1a = idx;
       int cnot = circuit.next_idx[0][h1a];
       int h1b = circuit.prev_idx[1][cnot];
       int h2a = circuit.next_idx[0][cnot];
@@ -260,6 +268,55 @@ __global__ void apply(int N, CircuitView &circuit, int *device_is_selected) {
       int control = circuit.qubit_0[cnot];
       circuit.qubit_0[cnot] = circuit.qubit_1[cnot];
       circuit.qubit_1[cnot] = control;
+      // Link slots must continue to refer to the corresponding operand wire.
+      int next = circuit.next_idx[0][cnot];
+      circuit.next_idx[0][cnot] = circuit.next_idx[1][cnot];
+      circuit.next_idx[1][cnot] = next;
+      int prev = circuit.prev_idx[0][cnot];
+      circuit.prev_idx[0][cnot] = circuit.prev_idx[1][cnot];
+      circuit.prev_idx[1][cnot] = prev;
+      break;
+    }
+    case Pattern:
+    HH_CANCEL: {
+      int h1 = idx;
+      int h2 = circuit.next_idx[0][h1];
+
+      // write tombstones to the H gates
+      circuit.gate_type[h1] = GATE::TOMBSTONE;
+      circuit.gate_type[h2] = GATE::TOMBSTONE;
+      break;
+    }
+    case Pattern:
+    XX_CANCEL: {
+      int x1 = idx;
+      int x2 = circuit.next_idx[0][x1];
+
+      // write tombstones to the X gates
+      circuit.gate_type[x1] = GATE::TOMBSTONE;
+      circuit.gate_type[x2] = GATE::TOMBSTONE;
+      break;
+    }
+    case Pattern:
+    CNOT_CANCEL: {
+      int cx1 = idx;
+      int cx2 = next_index[idx];
+
+      circuit.gate_type[cx1] = GATE::TOMBSTONE;
+      circuit.gate_type[cx2] = GATE::TOMBSTONE;
+      break;
+    }
+    case Pattern:
+    RZ_MERGE: {
+      int rz1 = idx;
+      int rz2 = next_index[idx];
+
+      // write the combined angle into the first index
+      circuit.angle_pi[0][rz1] += circuit.angle_pi[0][rz2];
+      circuit.angle_pi[1][rz1] += circuit.angle_pi[1][rz2];
+
+      circuit.gate_type[rz2] = GATE::TOMBSTONE;
+      break;
     }
     default: {
     }
@@ -267,9 +324,40 @@ __global__ void apply(int N, CircuitView &circuit, int *device_is_selected) {
   }
 }
 
-__global__ void
-compact(int N, CircuitView &circuit) {
+/**
+ * @brief Unlink tombstones and rebuild wire starts and live-gate links.
+ * Gate data stays in place; physical storage packing is a separate operation.
+ * @pre One thread per qubit, after apply has completed. Tombstones retain
+ * their qubit fields and links so deleted two-qubit gates remain traversable.
+ */
+__global__ void relink(int N, int num_qubits, CircuitView &circuit) {
+  int qubit = blockDim.x * blockIdx.x + threadIdx.x;
 
+  if (qubit < num_qubits) {
+    int next = circuit.qstart_indices[qubit];
+    int prev = -1;
+    int prev_operand = 0;
+    circuit.qstart_indices[qubit] = -1;
+
+    while (next != -1) {
+      // Use operands rather than gate type: a tombstone may have been a CNOT.
+      int operand = circuit.qubit_0[next] == qubit ? 0 : 1;
+      int successor = circuit.next_idx[operand][next];
+      if (circuit.gate_type[next] != GATE::TOMBSTONE) {
+        circuit.prev_idx[operand][next] = prev;
+        if (prev != -1) {
+          circuit.next_idx[prev_operand][prev] = next;
+        } else {
+          circuit.qstart_indices[qubit] = next;
+        }
+        prev = next;
+        prev_operand = operand;
+      }
+      next = successor;
+    }
+    if (prev != -1)
+      circuit.next_idx[prev_operand][prev] = -1;
+  }
 }
 
 void CudaOptimizer::optimize() {
@@ -278,17 +366,24 @@ void CudaOptimizer::optimize() {
   if (!num_gates_)
     return;
   // Bind kernel references to the device-resident view. Its arrays also
-  // reside on the GPU; dereferencing here binds a reference without a host read.
+  // reside on the GPU; dereferencing here binds a reference without a host
+  // read.
 
   // apply the match kernel
   int numBlocks = (num_gates_ + _num_threads - 1) / _num_threads;
-  match<<<numBlocks, _num_threads>>>(num_gates_, *device_gates_, device_owning_pattern_, device_is_selected_);
-  check(cudaGetLastError());
-  // apply the apply kernels
-  apply<<<numBlocks, _num_threads>>>(num_gates_, *device_gates_, device_is_selected_);
+  match<<<numBlocks, _num_threads>>>(
+      num_gates_, *device_gates_, device_owning_pattern_, device_is_selected_);
   check(cudaGetLastError());
 
-  // TODO 
+  // apply the apply kernels
+  apply<<<numBlocks, _num_threads>>>(num_gates_, *device_gates_,
+                                     device_is_selected_);
+  check(cudaGetLastError());
+
+  int qubitBlocks = (num_qubits_ + _num_threads - 1) / _num_threads;
+  relink<<<qubitBlocks, _num_threads>>>(num_gates_, num_qubits_,
+                                        *device_gates_);
+  check(cudaGetLastError());
 
   check(cudaDeviceSynchronize());
 }
@@ -302,4 +397,3 @@ void CudaOptimizer::copy_to_host(Circuit &host) const {
     check(cudaMemcpy(host.storage.get(), device_storage_, host.bytes(),
                      cudaMemcpyDeviceToHost));
 }
-

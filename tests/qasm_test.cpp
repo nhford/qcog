@@ -1,6 +1,7 @@
 #include "qasm.h"
 #include <cassert>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -13,6 +14,28 @@ int main(int argc, char **argv) {
       "rz(0.5) a[0];\n");
   Circuit c = read_circuit(input);
   assert(c.num_qubits == 3 && c.num_gates == 4);
+  assert(c.gates.qstart_indices[0] == 3);
+  assert(c.gates.qstart_indices[1] == 0);
+  assert(c.gates.qstart_indices[2] == 1);
+  assert(reinterpret_cast<unsigned char *>(c.gates.qstart_indices + c.num_qubits) ==
+         c.storage.get() + c.bytes());
+
+  // A copied storage block must rebuild its view with rebased start pointers.
+  Circuit storage_copy(c.num_gates, c.num_qubits);
+  std::memcpy(storage_copy.storage.get(), c.storage.get(), c.bytes());
+  for (int q = 0; q < c.num_qubits; ++q)
+    assert(storage_copy.gates.qstart_indices[q] == c.gates.qstart_indices[q]);
+
+  std::istringstream unused_wires("qreg q[3];\ncx q[1],q[0];\n");
+  Circuit sparse = read_circuit(unused_wires);
+  assert(sparse.gates.qstart_indices[0] == 0);
+  assert(sparse.gates.qstart_indices[1] == 0);
+  assert(sparse.gates.qstart_indices[2] == -1);
+  std::istringstream empty_input("qreg q[3];\n");
+  Circuit empty = read_circuit(empty_input);
+  assert(empty.num_gates == 0 && empty.bytes() == 3 * sizeof(int));
+  for (int q = 0; q < empty.num_qubits; ++q)
+    assert(empty.gates.qstart_indices[q] == -1);
   assert(c.gates.qubit_0[1] == 2 && c.gates.qubit_1[1] == 1);
   assert(c.gates.next_idx[0][0] == 1);
   assert(c.gates.prev_idx[1][1] == 0);
@@ -71,6 +94,8 @@ int main(int argc, char **argv) {
     Circuit copy = read_circuit(encoded);
     assert(copy.num_gates == original.num_gates);
     assert(copy.num_qubits == original.num_qubits);
+    for (int q = 0; q < copy.num_qubits; ++q)
+      assert(copy.gates.qstart_indices[q] == original.gates.qstart_indices[q]);
     for (int i = 0; i < copy.num_gates; ++i) {
       assert(copy.gates.gate_type[i] == original.gates.gate_type[i]);
       for (int component = 0; component < 2; ++component)
