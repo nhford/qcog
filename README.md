@@ -44,13 +44,13 @@ its optimized output with the corresponding circuit in `benchmarks/hadamard/expe
 To run the built-in cases plus a single fixture, use
 `./tests/gpu_test benchmarks/hadamard/hpc_positive.qasm`.
 
-Run `make test-commutation` for direct GPU tests of `single_commute_advance`
-(the current commutation helper), `check_terminate`, and `match_pair`, plus
+Run `make test-commutation` for direct GPU tests of `advance_rz`,
+`advance_cnot`, and partner detection in `match_pair`, plus
 end-to-end cancellation checks. These 71 checks are also included in
 `make test-gpu` and `make test-all`. They cover Figure 5 on page 12 of
 [Nam et al.](https://arxiv.org/pdf/1710.07345), including blocked commutations
 and single-qubit cancellation/rotation merging. An independent small
 statevector simulator checks the full operators up to global phase.
-The new suite currently exposes unfinished cancellation behavior and commutation
-bugs, so a nonzero exit is expected until those are addressed. See
+All 71 checks pass after wiring partner indices through matching and
+application. See
 [test details and initial results](tests/COMMUTATION.md).

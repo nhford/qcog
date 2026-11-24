@@ -26,8 +26,9 @@ The six positive commutation patterns are:
 | CX(c,a) | CX(c,b), sharing the control |
 | CX(a,b) | H(b), CX(b,c), H(b) |
 
-There is no `can_commute` function in the implementation at the time of writing;
-the suite exercises `single_commute_advance` instead.
+The suite exercises `advance_rz` and `advance_cnot`. Their cursors identify the
+next gates to inspect; probes use the accumulated gate-index buffer to report
+the last crossed gate for comparison with the fixtures.
 
 `tests/commutation_test.cu` includes `optimizer.cu` in its translation unit so a
 test kernel can call its static device helpers without changing their visibility
@@ -44,14 +45,14 @@ The 71 checks run independently on each visible GPU:
   and circuit boundaries. The expected value is the last crossed gate's actual
   array index, or the original index if blocked.
 - 14 termination checks: adjacent RZs, identical CXs, unrelated interleaved gates,
-  blockers, reversed CXs, and end-of-wire. The current two-argument
-  `check_terminate` API checks immediate RZ/CX partners only; HH/XX are tested
-  through `match_pair`.
+  blockers, reversed CXs, and end-of-wire. Partner detection now runs through
+  `match_pair`; the standalone `check_terminate` API is no longer used.
 - 21 pair checks: adjacent HH/XX, ownership claims on both endpoints, rejection
   of blocked pairs, RZ inverse/merge partners, and CX partners across the
   permitted subcircuits. `match_pair` receives the actual next gate on the
   starting gate's first wire. RZ/CX successful matches must return the matching
-  endpoint in `next_index`; HH/XX matches must select their cancellation pattern.
+  endpoint in `next_index`; all matches must select their appropriate pattern
+  and claim both endpoints.
 - 9 optimizer checks: actual HH/XX elimination, RZ inverse elimination and
   merging (including both angle components), CX elimination, and preservation
   of blocked pairs. These check operator equivalence and surviving gate count.
@@ -66,9 +67,21 @@ of every mathematically possible commutation.
 
 The helper probes use one CUDA thread to isolate traversal and matching logic.
 They do not test concurrent ownership conflicts, repeated optimization passes,
-or large-circuit performance. Ownership claims for RZ/CX are not required by
-these direct tests because the current matcher exposes those partners through
-`next_index`; the optimizer checks separately require actual elimination/merging.
+or large-circuit performance. Ownership claims for RZ/CX are checked along with
+the partner returned through `next_index`; the optimizer checks separately
+require actual elimination/merging.
+
+## Current result
+
+All **71 checks pass** after the partner buffer was allocated and passed to
+both kernels. Pair matching now runs for H, X, RZ, and CNOT starts, including
+two-gate circuits. The loops check for partners before advancing and preserve
+their original wires. CNOT traversal rejects blocks that cross an earlier
+dependency on its other wire. `apply` uses the recorded partner and relinks
+surviving gates afterward.
+
+The separate GPU suite also covers nonzero starting indices, two-gate RZ
+merging, and RZ traversal along a CNOT parity-block target.
 
 ## Initial results and diagnosis
 

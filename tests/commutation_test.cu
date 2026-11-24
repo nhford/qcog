@@ -53,7 +53,7 @@ struct TerminateCase {
   bool expected;
 };
 
-// check_terminate currently has a two-argument adjacency API for RZ/CX only.
+// Termination is now tested through match_pair, which owns partner detection.
 static const TerminateCase terminate_cases[] = {
     {"adjacent RZs can merge", "rz(0.3) q[0];\nrz(0.7) q[0];\n", true},
     {"numeric and pi angles can merge", "rz(pi/4) q[0];\nrz(0.125) q[0];\n", true},
@@ -197,18 +197,28 @@ __global__ void probe(CircuitView circuit, int start, int next, Operation op,
     for (int &gate : gate_indices) gate = -777;
     gate_indices[0] = start;
     int gate_count = 1;
-    result->value = single_commute_advance(circuit, start, gate_indices,
-                                          gate_count, capacity);
+    if (circuit.gate_type[start] == RZ) {
+      advance_rz(circuit, start, circuit.next_idx[0][start], gate_indices,
+                 gate_count, capacity);
+    } else {
+      cuda::std::pair<int, int> cursor = {circuit.next_idx[0][start],
+                                        circuit.next_idx[1][start]};
+      advance_cnot(circuit, start, cursor, gate_indices, gate_count, capacity);
+    }
+    // The split helpers expose the next cursor; these fixtures identify the
+    // last crossed gate, available from the accumulated ownership buffer.
+    result->value = gate_indices[gate_count - 1];
     result->gate_count = gate_count;
     for (int i = 0; i < pair_gate_capacity; ++i)
       result->gate_indices[i] = gate_indices[i];
   }
-  else if (op == TERMINATE) result->value = check_terminate(circuit, start);
+  else if (op == TERMINATE)
+    result->value = match_pair(start, next, circuit, owners, selected, &result->next, 0);
   else {
     result->value = match_pair(start, next, circuit, owners, selected, &result->next, 0);
     result->pattern = selected[start];
     result->owner_a = owners[start];
-    result->owner_b = owners[next];
+    result->owner_b = result->value ? owners[result->next] : INT_MAX;
   }
 }
 
@@ -233,7 +243,7 @@ static Result evaluate(const Circuit &c, int start, Operation op,
   check(cudaMemcpy(d.result, &result, sizeof(result), cudaMemcpyHostToDevice));
   int next = c.gates.next_idx[0][start];
   require(op != PAIR || next >= 0, "pair fixture must have a next gate");
-  probe<<<1, 1>>>(circuit_view(d.storage, c.num_gates), start, next, op,
+  probe<<<1, 1>>>(circuit_view(d.storage, c.num_gates, c.num_qubits), start, next, op,
                   d.owners, d.selected, d.result, capacity);
   check(cudaGetLastError());
   check(cudaDeviceSynchronize());
@@ -338,7 +348,13 @@ int main() {
           expect(result.pattern, t.pattern, "selected pattern");
           expect(result.owner_a, 0, "first owner");
           expect(result.owner_b, 0, "second owner");
-        } else if (t.expected) expect(result.next, t.partner, "matching endpoint");
+        } else if (t.expected) {
+          expect(result.next, t.partner, "matching endpoint");
+          expect(result.pattern, c.gates.gate_type[0] == RZ ? RZ_MERGE : CNOT_CANCEL,
+                 "selected pattern");
+          expect(result.owner_a, 0, "first owner");
+          expect(result.owner_b, 0, "partner owner");
+        }
         else expect(result.pattern, NONE, "selected pattern after rejection");
       });
       for (const auto &t : rewrite_cases) run("optimizer", t.name, [&] {

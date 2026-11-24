@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <initializer_list>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -28,6 +29,17 @@ struct TestCase {
 static const TestCase cases[] = {
     {"empty circuit", "", ""},
     {"single gate", "h q[0];\n", "h q[0];\n"},
+    {"HH partner at nonzero index", "x q[1];\nh q[0];\nh q[0];\n",
+     "x q[1];\n"},
+    {"XX partner at nonzero index", "h q[1];\nx q[0];\nx q[0];\n",
+     "h q[1];\n"},
+    {"two-gate RZ merge", "rz(pi/4) q[0];\nrz(0.125) q[0];\n",
+     "rz(pi/4+0.125) q[0];\n"},
+    {"CNOT partner at nonzero index", "x q[1];\ncx q[0],q[1];\ncx q[0],q[1];\n",
+     "x q[1];\n"},
+    {"RZ merge stays on parity-block target",
+     "rz(pi/4+0.125) q[1];\ncx q[0],q[1];\nrz(0.7) q[1];\ncx q[0],q[1];\nrz(pi/4) q[1];\n",
+     "rz(pi/2+0.125) q[1];\ncx q[0],q[1];\nrz(0.7) q[1];\ncx q[0],q[1];\n"},
     {"positive HP", "h q[0];\nrz(pi/2) q[0];\nh q[0];\n",
      "rz(-pi/2) q[0];\nh q[0];\nrz(-pi/2) q[0];\n"},
     {"negative HP", "h q[0];\nrz(-pi/2) q[0];\nh q[0];\n",
@@ -56,6 +68,9 @@ static Circuit read_file(const std::filesystem::path &path) {
 static void equal(const Circuit &actual, const Circuit &expected) {
   require(actual.num_gates == expected.num_gates, "gate count differs");
   require(actual.num_qubits == expected.num_qubits, "qubit count differs");
+  for (int q = 0; q < actual.num_qubits; ++q)
+    require(actual.gates.qstart_indices[q] == expected.gates.qstart_indices[q],
+            "wire start differs");
   for (int i = 0; i < actual.num_gates; ++i) {
     require(actual.gates.gate_type[i] == expected.gates.gate_type[i], "gate type differs");
     require(actual.gates.qubit_0[i] == expected.gates.qubit_0[i] &&
@@ -67,6 +82,31 @@ static void equal(const Circuit &actual, const Circuit &expected) {
               actual.gates.prev_idx[component][i] == expected.gates.prev_idx[component][i],
               "wire links differ");
     }
+  }
+}
+
+// Check original array indices directly; serialization would hide broken links.
+static void check_live_links(const Circuit &circuit) {
+  for (int q = 0; q < circuit.num_qubits; ++q) {
+    int prev = -1;
+    int prev_operand = 0;
+    for (int i = 0; i < circuit.num_gates; ++i) {
+      if (circuit.gates.gate_type[i] == TOMBSTONE) continue;
+      int operand = circuit.gates.qubit_0[i] == q ? 0 :
+                    circuit.gates.qubit_1[i] == q ? 1 : -1;
+      if (operand == -1) continue;
+      require(circuit.gates.prev_idx[operand][i] == prev, "live previous link differs");
+      if (prev == -1)
+        require(circuit.gates.qstart_indices[q] == i, "live wire start differs");
+      else
+        require(circuit.gates.next_idx[prev_operand][prev] == i, "live next link differs");
+      prev = i;
+      prev_operand = operand;
+    }
+    if (prev == -1)
+      require(circuit.gates.qstart_indices[q] == -1, "empty wire start differs");
+    else
+      require(circuit.gates.next_idx[prev_operand][prev] == -1, "wire tail differs");
   }
 }
 
@@ -100,6 +140,7 @@ int main(int argc, char **argv) {
           optimizer.optimize();
           optimizer.copy_to_host(circuit);
         }
+        check_live_links(circuit);
         std::ostringstream output;
         write_circuit(output, circuit);
         std::istringstream encoded(output.str());
@@ -113,6 +154,20 @@ int main(int argc, char **argv) {
       for (const auto &test : cases) {
         run_test(test.name, parse(test.input), parse(test.input), parse(test.expected));
       }
+      auto test_unlink = [&](const char *name, const char *body,
+                             std::initializer_list<int> removed, const char *expected) {
+        auto tombstoned = [&]() {
+          Circuit circuit = parse(body);
+          for (int i : removed) circuit.gates.gate_type[i] = TOMBSTONE;
+          return circuit;
+        };
+        run_test(name, tombstoned(), tombstoned(), parse(expected));
+      };
+      test_unlink("entire wire deleted", "x q[0];\nx q[0];\n", {0, 1}, "");
+      test_unlink("deleted head and tail", "x q[1];\ncx q[0],q[1];\nx q[1];\n",
+                  {0, 2}, "cx q[0],q[1];\n");
+      test_unlink("deleted CNOT chain", "x q[0];\ncx q[0],q[1];\ncx q[1],q[0];\nx q[1];\n",
+                  {1, 2}, "x q[0];\nx q[1];\n");
       for (int arg = 1; arg < argc; ++arg) {
         const std::filesystem::path path(argv[arg]);
         const auto expected_path = path.parent_path() / "expected" / path.filename();

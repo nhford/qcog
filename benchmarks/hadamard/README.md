@@ -16,7 +16,8 @@ Each input has a corresponding reference circuit in `expected/`.
 - `no_match_angle.qasm`: pi/4 is not a phase angle accepted by these rules.
   All 3 gates remain.
 - `no_match_control.qasm`: the H-P pair is on the CX control instead of its
-  target. All 5 gates remain.
+  target, so the Hadamard rule does not apply. Pair reduction commutes the
+  inverse RZ gates through the CX control and cancels them, leaving 3 gates.
 - `no_match_same_sign.qasm`: the two phase angles are equal rather than
   opposite. All 5 gates remain.
 

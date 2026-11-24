@@ -13,6 +13,8 @@ struct CircuitView {
   int *qubit_1; // CNOT target; operand 1 in next_idx/prev_idx.
   int *next_idx[2];
   int *prev_idx[2]; /** TODO: need these be initialized to -1? */
+  // First gate on each wire, or -1 for an empty wire.
+  int *qstart_indices;
 };
 
 struct Circuit {
@@ -21,9 +23,9 @@ struct Circuit {
   std::unique_ptr<unsigned char[]> storage;
   CircuitView gates;
 
-  explicit Circuit(int count);
+  Circuit(int gate_count, int qubit_count);
   std::size_t bytes() const;
 };
 
 // Construct a view into host or device storage without copying host pointers.
-CircuitView circuit_view(unsigned char *storage, int count);
+CircuitView circuit_view(unsigned char *storage, int count, int qubit_count);
