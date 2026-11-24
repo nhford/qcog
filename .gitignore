@@ -1,5 +1,8 @@
 .clangd
 .venv/
+_site/
+.jekyll-cache/
+.sass-cache/
 
 # executables
 */*_test

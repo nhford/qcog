@@ -1,0 +1,6 @@
+title: "QCOG: Quantum Circuit Optimization on GPUs"
+description: 15-618 Final Project
+url: "https://nhford.github.io"
+baseurl: "/qcog"
+header_pages:
+  - initial-proposal.md

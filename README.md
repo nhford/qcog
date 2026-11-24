@@ -54,3 +54,19 @@ statevector simulator checks the full operators up to global phase.
 All 71 checks pass after wiring partner indices through matching and
 application. See
 [test details and initial results](tests/COMMUTATION.md).
+## Project website
+
+The Jekyll site is authored in Markdown. `index.md` is the midterm project
+proposal, and `initial-proposal.md` preserves the original proposal. On this
+machine, activate the installed Ruby 3.2.2 first (the system Ruby is older),
+then install the site dependencies and start the preview:
+
+```sh
+export PATH="$HOME/.rubies/ruby-3.2.2/bin:$HOME/.gem/ruby/3.2.2/bin:$PATH"
+bundle install
+make serve-site
+```
+
+Open `http://127.0.0.1:4000/qcog/`. Jekyll rebuilds the page as you edit the
+Markdown files; refresh the browser to see the update. The header navigation
+links to the initial proposal.

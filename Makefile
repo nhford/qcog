@@ -4,7 +4,7 @@ NVCC_HOST_COMPILER ?= g++-11
 PYTHON ?= python3
 INPUT ?= benchmarks/small/tof_3.qasm
 
-.PHONY: all run draw
+.PHONY: all run draw serve-site
 .DELETE_ON_ERROR:
 
 all: qcog
@@ -17,6 +17,9 @@ run: qcog
 
 draw: run
 	$(PYTHON) draw_circuit.py output.qasm circuit.png
+
+serve-site:
+	bundle exec jekyll serve
 
 CXX ?= c++
 .PHONY: test test-gpu test-all test-commutation
