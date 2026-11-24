@@ -7,6 +7,8 @@ title: "QCOG: Milestone Report"
 
 Group Members: Noah Ford, Changxiang Gao
 
+https://nhford.github.io/qcog/
+
 15-618 Final Project Milestone Report
 
 ## Project Summary
