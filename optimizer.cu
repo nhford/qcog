@@ -2,6 +2,7 @@
 #include "optimizer.h"
 #include <climits>
 #include <cuda_runtime.h>
+#include <cuda/std/utility>
 #include <stdexcept>
 #include <thrust/device_ptr.h>
 #include <thrust/fill.h>
@@ -17,6 +18,8 @@ CudaOptimizer::CudaOptimizer(int num_threads) : _num_threads(num_threads) {
 }
 
 CudaOptimizer::~CudaOptimizer() {
+  if (next_idx)
+    cudaFree(next_idx);
   if (device_gates_)
     cudaFree(device_gates_);
   if (device_owning_pattern_)
@@ -45,10 +48,12 @@ void CudaOptimizer::setup(const Circuit &host) {
     check(cudaMalloc(&device_is_selected_, host.num_gates * sizeof(int)));
     begin = thrust::device_pointer_cast(device_is_selected_);
     thrust::fill(begin, begin + host.num_gates, Pattern::NONE);
+    check(cudaMalloc(&next_idx, host.num_gates * sizeof(int)));
+    check(cudaMemset(next_idx, 0xff, host.num_gates * sizeof(int)));
   }
   num_gates_ = host.num_gates;
   num_qubits_ = host.num_qubits;
-  const CircuitView view = circuit_view(device_storage_, num_gates_);
+  const CircuitView view = circuit_view(device_storage_, num_gates_, num_qubits_);
   check(cudaMalloc(&device_gates_, sizeof(CircuitView)));
   check(cudaMemcpy(device_gates_, &view, sizeof(CircuitView),
                    cudaMemcpyHostToDevice));
@@ -165,6 +170,258 @@ match_hcnot(int idx, int next_1_idx, int next_2_idx, const CircuitView &circuit,
   return true;
 }
 
+// A bounded per-thread buffer avoids host-only std::vector operations in device
+// code. Reaching the limit conservatively stops the search.
+constexpr int pair_gate_capacity = 64;
+
+static __device__ inline
+bool append_gate_indices(
+  int *gate_indices, int &gate_count, int capacity,
+    const int *block, int block_count) 
+{
+  // Check the entire block first: failure must not append a partial block.
+  if (block_count > capacity - gate_count) return false;
+  for (int i = 0; i < block_count; ++i)
+    gate_indices[gate_count++] = block[i];
+  return true;
+}
+
+// /** @brief returns the index of the last element of commutation group.
+//  * returns (original) idx if it cannot commute any further
+//  * idx: index of the RZ/CNOT gate
+//  * gate_indices: caller-owned array of the start gate and crossed gates.
+//  * gate_count: populated length, updated only for a complete successful block.
+//  * capacity: maximum number of indices the caller's array can hold.
+//  */
+// static __device__ inline
+// int single_commute_advance(const CircuitView& circuit, const int idx,
+//                            int *gate_indices, int &gate_count, int capacity) {
+//   auto next_idx = circuit.next_idx;
+//   if (circuit.gate_type[idx] == GATE::RZ) {
+    
+//   }
+//   else if (circuit.gate_type[idx] == GATE::CNOT) {
+    
+//   }
+//   return idx;
+// }
+
+/** @brief returns the index of either the next element to look
+ * or the unchanged candidate index (if the search fails)
+ */
+static __device__ inline
+int advance_rz(const CircuitView& circuit, const int idx, int next_1_idx,
+               int *gate_indices, int &gate_count, int capacity) {
+  
+  auto next_idx = circuit.next_idx;
+  // int next_1_idx = next_idx[0][idx];
+  int next_2_idx;
+  int next_3_idx;
+  if (next_1_idx != -1) {
+    // c (control) pattern check
+    if (circuit.gate_type[next_1_idx] == GATE::CNOT) {
+      // check if cnot is control or target along the same wire
+      if (circuit.qubit_0[next_1_idx] == circuit.qubit_0[idx]) {
+        const int block[] = {next_1_idx};
+        if (!append_gate_indices(gate_indices, gate_count, capacity, block, 1))
+          return next_1_idx;
+        return next_idx[0][next_1_idx];
+      }
+      else if (circuit.qubit_1[next_1_idx] == circuit.qubit_0[idx]) { // target bit on the same wire
+        // make sure middle gate is RZ
+        next_2_idx = next_idx[1][next_1_idx];
+        if (next_2_idx == -1 || circuit.gate_type[next_2_idx] != GATE::RZ)
+          return next_1_idx;
+
+        // make sure last gate is also cnot target
+        next_3_idx = next_idx[0][next_2_idx];
+        if (next_3_idx == -1 || circuit.gate_type[next_3_idx] != GATE::CNOT || circuit.prev_idx[1][next_3_idx] != next_2_idx)
+          return next_1_idx;
+
+        if (circuit.qubit_0[next_1_idx] != circuit.qubit_0[next_3_idx] ||
+            circuit.qubit_1[next_1_idx] != circuit.qubit_1[next_3_idx] ||
+            circuit.next_idx[0][next_1_idx] != next_3_idx)
+          return next_1_idx;
+
+        // entire gate sequence established -> true case
+        const int block[] = {next_1_idx, next_2_idx, next_3_idx};
+        if (!append_gate_indices(gate_indices, gate_count, capacity, block, 3))
+          return next_1_idx;
+        return next_idx[1][next_3_idx];
+      }
+    }
+    // h c h (target) pattern check
+    else if (circuit.gate_type[next_1_idx] == GATE::HADAMARD) {
+      // check middle gate is cnot target
+      next_2_idx = next_idx[0][next_1_idx];
+      if (next_2_idx == -1 || circuit.gate_type[next_2_idx] != GATE::CNOT || circuit.prev_idx[1][next_2_idx] != next_1_idx)
+        return next_1_idx;
+
+      // check 3rd gate is H
+      next_3_idx = next_idx[1][next_2_idx];
+      if (next_3_idx == -1 || circuit.gate_type[next_3_idx] != GATE::HADAMARD)
+        return next_1_idx;
+
+      // entire gate sequence complete -> return true
+      const int block[] = {next_1_idx, next_2_idx, next_3_idx};
+      if (!append_gate_indices(gate_indices, gate_count, capacity, block, 3))
+        return next_1_idx;
+      return next_idx[0][next_3_idx];
+    }
+  }
+  return next_1_idx;
+}
+
+/**
+* @brief returns true if the cnot commutes with the next set of gates
+*/
+static __device__ inline
+bool advance_cnot(const CircuitView& circuit, const int idx, cuda::std::pair<int,int>& next_qubits,
+                 int *gate_indices, int &gate_count, int capacity) {
+  int next_ctrl_idx = next_qubits.first;
+  int next_tgt_idx = next_qubits.second;
+  // check if control qubit matches
+  if (next_ctrl_idx != -1 && next_ctrl_idx != next_tgt_idx &&
+      (next_tgt_idx == -1 || next_ctrl_idx < next_tgt_idx) &&
+      circuit.gate_type[next_ctrl_idx] == GATE::CNOT &&
+      circuit.qubit_0[next_ctrl_idx] == circuit.qubit_0[idx]) {
+
+    const int block[] = {next_ctrl_idx};
+    if (!append_gate_indices(gate_indices, gate_count, capacity, block, 1)) {
+      return false;
+    }
+    // update the next qubits to look at
+    next_qubits.first = circuit.next_idx[0][next_ctrl_idx];
+    return true;
+  }
+  // check if target qubit matches
+  else if (next_tgt_idx != -1 &&
+           (next_ctrl_idx == -1 || next_tgt_idx < next_ctrl_idx)) {
+    if (circuit.gate_type[next_tgt_idx] == GATE::CNOT && next_ctrl_idx != next_tgt_idx &&
+      circuit.qubit_1[next_tgt_idx] == circuit.qubit_1[idx]) {
+      const int block[] = {next_tgt_idx};
+      if (!append_gate_indices(gate_indices, gate_count, capacity, block, 1))
+        return false;
+      // update the next qubit gate to look at (for the target gate)
+      next_qubits.second = circuit.next_idx[1][next_tgt_idx];
+      return true;
+    }
+    else if (circuit.gate_type[next_tgt_idx] == GATE::HADAMARD) {
+      int next_2_idx = circuit.next_idx[0][next_tgt_idx];
+      // check middle is control cnot
+      if (next_2_idx == -1 ||
+          circuit.gate_type[next_2_idx] != GATE::CNOT ||
+          circuit.prev_idx[0][next_2_idx] != next_tgt_idx) {
+        return false;
+      }
+      // check last qubit is H
+      int next_3_idx = circuit.next_idx[0][next_2_idx];
+      if (next_3_idx == -1 || circuit.gate_type[next_3_idx] != GATE::HADAMARD) {
+        return false;
+      }
+      // Do not move past a dependency on the original control wire.
+      // Gate indices retain the input's topological order.
+      if (next_ctrl_idx != -1 && next_ctrl_idx <= next_3_idx)
+        return false;
+
+      // commute sequence complete -> return true
+      const int block[] = {next_tgt_idx, next_2_idx, next_3_idx};
+      if (!append_gate_indices(gate_indices, gate_count, capacity, block, 3))
+        return false;
+
+      // modify update the next gate to look (for target gate)
+      next_qubits.second = circuit.next_idx[0][next_3_idx];
+      return true;
+    }
+  }
+  return false;
+}
+
+// static __device__ inline bool check_terminate(const CircuitView &circuit, int starting_idx, int ending_idx) {
+//   if (ending_idx == -1) return false;
+//   switch (circuit.gate_type[starting_idx]) {
+//     case GATE::RZ:
+//       return circuit.gate_type[ending_idx] == GATE::RZ &&
+//              circuit.qubit_0[starting_idx] == circuit.qubit_0[ending_idx];
+//     case GATE::CNOT:
+//       return circuit.gate_type[ending_idx] == GATE::CNOT &&
+//         circuit.qubit_0[starting_idx] == circuit.qubit_0[ending_idx] &&
+//         circuit.qubit_1[starting_idx] == circuit.qubit_1[ending_idx];
+//     default:
+//       return false;
+//   }
+// }
+
+static __device__ inline bool match_pair(int idx, int next_1_idx, const CircuitView &circuit,
+                                         int *owning_pattern, int *is_selected, int *next_index,
+                                         int threadidx) {
+  int gate_indices[pair_gate_capacity] = {idx};
+  int gate_count = 1;
+
+  next_index[threadidx] = idx;
+  if (next_1_idx < 0) return false;
+  // Handle adjacent self-inverse single-qubit gates first.
+  if (circuit.gate_type[idx] == circuit.gate_type[next_1_idx]) {
+    switch (circuit.gate_type[idx]) {
+      case GATE::HADAMARD: {
+        gate_indices[gate_count++] = next_1_idx;
+        next_index[threadidx] = next_1_idx;
+        claim_pattern(idx, Pattern::HH_CANCEL, gate_indices, gate_count, owning_pattern, is_selected);
+        return true;
+      }
+      case GATE::NOT: {
+        gate_indices[gate_count++] = next_1_idx;
+        next_index[threadidx] = next_1_idx;
+        claim_pattern(idx, Pattern::XX_CANCEL, gate_indices, gate_count, owning_pattern, is_selected);
+        return true;
+      }
+      default: break;
+    }
+  }
+  if (circuit.gate_type[idx] == GATE::RZ) {
+    int candidate = next_1_idx;
+    while (candidate >= 0) {
+      if (circuit.gate_type[candidate] == GATE::RZ &&
+          circuit.qubit_0[candidate] == circuit.qubit_0[idx]) {
+        if (!append_gate_indices(gate_indices, gate_count, pair_gate_capacity,
+                                 &candidate, 1))
+          return false;
+        next_index[threadidx] = candidate;
+        claim_pattern(idx, Pattern::RZ_MERGE, gate_indices, gate_count,
+                      owning_pattern, is_selected);
+        return true;
+      }
+      const int next = advance_rz(circuit, idx, candidate, gate_indices,
+                                  gate_count, pair_gate_capacity);
+      if (next == candidate) return false;
+      candidate = next;
+    }
+  } else if (circuit.gate_type[idx] == GATE::CNOT) {
+    cuda::std::pair<int, int> next_qubits = {
+        circuit.next_idx[0][idx], circuit.next_idx[1][idx]};
+    for (;;) {
+      const int candidate = next_qubits.first;
+      if (candidate >= 0 && candidate == next_qubits.second &&
+          circuit.gate_type[candidate] == GATE::CNOT &&
+          circuit.qubit_0[candidate] == circuit.qubit_0[idx] &&
+          circuit.qubit_1[candidate] == circuit.qubit_1[idx]) {
+        if (!append_gate_indices(gate_indices, gate_count, pair_gate_capacity,
+                                 &candidate, 1))
+          return false;
+        next_index[threadidx] = candidate;
+        claim_pattern(idx, Pattern::CNOT_CANCEL, gate_indices, gate_count,
+                      owning_pattern, is_selected);
+        return true;
+      }
+      if (!advance_cnot(circuit, idx, next_qubits, gate_indices, gate_count,
+                        pair_gate_capacity))
+        return false;
+    }
+  }
+
+  return false;
+}
+
 /** @brief Find the start of Hadamard patterns to optimize
   1. H - P - H => P^ - H - P^
   2. H - P - CNOT target - P^ - H => P^ - CNOT target - P
@@ -172,33 +429,31 @@ match_hcnot(int idx, int next_1_idx, int next_2_idx, const CircuitView &circuit,
      H - CNOT target  - H => CNOT control
  */
 __global__ void match(int N, const CircuitView &circuit, int *owning_pattern,
-                      int *is_selected) {
+                      int *is_selected, int *next_index) {
   int idx = blockDim.x * blockIdx.x + threadIdx.x;
+  if (idx >= N || circuit.gate_type[idx] == GATE::TOMBSTONE) return;
+  const int next_1_idx = circuit.next_idx[0][idx];
+  if (next_1_idx < 0) return;
 
-  /* only consider patterns starting with Hadamard at least 3 long */
-  if (idx < N - 2 && circuit.gate_type[idx] == GATE::HADAMARD) {
-    int next_1_idx = circuit.next_idx[0][idx];
-    if (next_1_idx == -1)
-      return;
-
-    int next_2_idx = circuit.next_idx[0][next_1_idx];
-    if (next_2_idx == -1)
-      return;
-
-    if (match_hp(idx, next_1_idx, next_2_idx, circuit, owning_pattern,
-                 is_selected))
-      return;
-    if (match_hpc(idx, next_1_idx, next_2_idx, circuit, owning_pattern,
-                  is_selected))
-      return;
-    match_hcnot(idx, next_1_idx, next_2_idx, circuit, owning_pattern,
-                is_selected);
+  // Three-gate Hadamard rules retain priority over pair reductions.
+  if (circuit.gate_type[idx] == GATE::HADAMARD) {
+    const int next_2_idx = circuit.next_idx[0][next_1_idx];
+    if (next_2_idx >= 0) {
+      if (match_hp(idx, next_1_idx, next_2_idx, circuit, owning_pattern, is_selected))
+        return;
+      if (match_hpc(idx, next_1_idx, next_2_idx, circuit, owning_pattern, is_selected))
+        return;
+      if (match_hcnot(idx, next_1_idx, next_2_idx, circuit, owning_pattern, is_selected))
+        return;
+    }
   }
+  match_pair(idx, next_1_idx, circuit, owning_pattern, is_selected,
+             next_index, idx);
 }
 
 /**
  * @brief For the chosen disjoint optimizations, update the circuit
- * TODO: should next_index be populated for more than just the RZ/CNOT case?
+ * next_index stores the partner recorded by match_pair for every pair rule.
  */
 __global__ void apply(int N, CircuitView &circuit, int *device_is_selected,
                       int *next_index) {
@@ -207,7 +462,7 @@ __global__ void apply(int N, CircuitView &circuit, int *device_is_selected,
 
   if (idx < N) {
     // check if the device is selected
-    switch (device_is_selected[i]) {
+    switch (device_is_selected[idx]) {
     case Pattern::NONE: {
       break;
     }
@@ -277,28 +532,25 @@ __global__ void apply(int N, CircuitView &circuit, int *device_is_selected,
       circuit.prev_idx[1][cnot] = prev;
       break;
     }
-    case Pattern:
-    HH_CANCEL: {
+    case Pattern::HH_CANCEL: {
       int h1 = idx;
-      int h2 = circuit.next_idx[0][h1];
+      int h2 = next_index[idx];
 
       // write tombstones to the H gates
       circuit.gate_type[h1] = GATE::TOMBSTONE;
       circuit.gate_type[h2] = GATE::TOMBSTONE;
       break;
     }
-    case Pattern:
-    XX_CANCEL: {
+    case Pattern::XX_CANCEL: {
       int x1 = idx;
-      int x2 = circuit.next_idx[0][x1];
+      int x2 = next_index[idx];
 
       // write tombstones to the X gates
       circuit.gate_type[x1] = GATE::TOMBSTONE;
       circuit.gate_type[x2] = GATE::TOMBSTONE;
       break;
     }
-    case Pattern:
-    CNOT_CANCEL: {
+    case Pattern::CNOT_CANCEL: {
       int cx1 = idx;
       int cx2 = next_index[idx];
 
@@ -306,8 +558,7 @@ __global__ void apply(int N, CircuitView &circuit, int *device_is_selected,
       circuit.gate_type[cx2] = GATE::TOMBSTONE;
       break;
     }
-    case Pattern:
-    RZ_MERGE: {
+    case Pattern::RZ_MERGE: {
       int rz1 = idx;
       int rz2 = next_index[idx];
 
@@ -316,6 +567,8 @@ __global__ void apply(int N, CircuitView &circuit, int *device_is_selected,
       circuit.angle_pi[1][rz1] += circuit.angle_pi[1][rz2];
 
       circuit.gate_type[rz2] = GATE::TOMBSTONE;
+      if (circuit.angle_pi[0][rz1] == 0 && circuit.angle_pi[1][rz1] == 0)
+        circuit.gate_type[rz1] = GATE::TOMBSTONE;
       break;
     }
     default: {
@@ -372,12 +625,12 @@ void CudaOptimizer::optimize() {
   // apply the match kernel
   int numBlocks = (num_gates_ + _num_threads - 1) / _num_threads;
   match<<<numBlocks, _num_threads>>>(
-      num_gates_, *device_gates_, device_owning_pattern_, device_is_selected_);
+      num_gates_, *device_gates_, device_owning_pattern_, device_is_selected_, next_idx);
   check(cudaGetLastError());
 
   // apply the apply kernels
   apply<<<numBlocks, _num_threads>>>(num_gates_, *device_gates_,
-                                     device_is_selected_);
+                                     device_is_selected_, next_idx);
   check(cudaGetLastError());
 
   int qubitBlocks = (num_qubits_ + _num_threads - 1) / _num_threads;
