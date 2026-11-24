@@ -360,6 +360,62 @@ __global__ void relink(int N, int num_qubits, CircuitView &circuit) {
   }
 }
 
+/**
+ * @brief pushes X gates to end of circuit, cancels where applicable
+ */
+__global__ void not_propagation(int N, int num_qubits, CircuitView &circuit) {
+  /* ensure only one thread is launched */
+
+  /* need to maintain two bits per qubit: carry of X, Z */
+  for (int idx = 0; idx < N; idx++) {
+    GATE gate = circuit.gate_type[idx];
+    if (gate == GATE::TOMBSTONE) {
+      continue;
+    }
+    int q0 = circuit.qubit_0[idx];
+    int q1 = circuit.qubit_1[idx];
+
+    if (gate == GATE::NOT) {
+      /* has X carry -> cancel X gate */
+      if (circuit.xz_carry[q0] & X_CARRY) {
+        circuit.gate_type[idx] = TOMBSTONE;
+        /** TODO: extract helper to clean up links */
+      }
+      circuit.xz_carry[q0] &= X_CARRY;
+    } else if (gate == GATE::HADAMARD) {
+      int carry = circuit.xz_carry[q0];
+      /* swap the X, Z carry: two lowest bits */
+      circuit.xz_carry[q0] =
+          ((carry & X_CARRY) << 1) | ((carry & Z_CARRY) >> 1);
+    } else if (gate == GATE::RZ) {
+      /* X carry negates angle */
+      if (circuit.xz_carry[q0] & X_CARRY) {
+        circuit.angle_pi[0][idx] *= -1;
+        circuit.angle_pi[1][idx] *= -1;
+      }
+      /* spend Z carry on RZ gate */
+      if (circuit.xz_carry[q0] & Z_CARRY) {
+        circuit.angle_pi[0][idx] = (circuit.angle_pi[0][idx] + 1) % 2;
+        circuit.xz_carry[q0] = 0;
+      }
+    } else { // GATE::CNOT
+      /* xor control onto target */
+      circuit.xz_carry[q1] ^= circuit.xz_carry[q0];
+    }
+  }
+
+  /* write final X, or Z to each qubit if has active carry value */
+  for (int qubit = 0; qubit < num_qubits; qubit++) {
+    int carry = circuit.xz_carry[qubit];
+    if (carry & X_CARRY) {
+      /** TODO: add final X gate */
+    }
+    if (carry & Z_CARRY) {
+      /** TODO: add final Z gate */
+    }
+  }
+}
+
 void CudaOptimizer::optimize() {
   if (!ready_)
     throw std::logic_error("Call setup before optimize");
@@ -383,6 +439,10 @@ void CudaOptimizer::optimize() {
   int qubitBlocks = (num_qubits_ + _num_threads - 1) / _num_threads;
   relink<<<qubitBlocks, _num_threads>>>(num_gates_, num_qubits_,
                                         *device_gates_);
+
+  // launch only one thread
+  not_propagation<<<1, 1>>>(*device_gates_);
+
   check(cudaGetLastError());
 
   check(cudaDeviceSynchronize());

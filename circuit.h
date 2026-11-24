@@ -3,6 +3,11 @@
 #include <cstddef>
 #include <memory>
 
+#define NO_CARRY 0
+#define X_CARRY 1
+#define Z_CARRY 2
+#define BOTH_CARRY 3
+
 enum GATE { HADAMARD, CNOT, NOT, RZ, TOMBSTONE };
 
 struct CircuitView {
@@ -15,6 +20,9 @@ struct CircuitView {
   int *prev_idx[2]; /** TODO: need these be initialized to -1? */
   // First gate on each wire, or -1 for an empty wire.
   int *qstart_indices;
+
+  // 2 bits per qubit to mark carry of x, z
+  char *xz_carry;
 };
 
 struct Circuit {

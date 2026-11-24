@@ -4,6 +4,7 @@ title: "Initial Proposal"
 ---
 
 # Title: QCOG, Quantum Circuit Optimization on GPUs
+
 Group Members: Noah Ford, Changxiang Gao
 
 15-618 Final Project Proposal
@@ -80,22 +81,22 @@ The specific GPU we run on can be flexible, but for now, we expect an A100.
 
 ## Schedule
 
-| Date       | Task                                                                            | Owner | Status |
-| ---------- | ------------------------------------------------------------------------------- | ----- | ------ |
-| Fri, 11/6  | Project Idea proposal with Dmitros                                              | TODO  | TODO   |
-| Mon, 11/9  | Project Proposal Due                                                            | TODO  | TODO   |
-| Wed, 11/11 | Read all of relevant background papers: Nam et al., POPQC, VOQC                 | TODO  | TODO   |
-| Fri, 11/13 | Finalize responsibilities of host vs kernels                                    | TODO  | TODO   |
-| Mon, 11/16 | Build representation of circuits for CUDA kernels to pass                       | TODO  | TODO   |
-| Wed, 11/18 | Hadamard Reduction local rewrite kernel                                         | TODO  | TODO   |
-| Fri, 11/20 | Outline single-qubit transformation rewrites                                    | TODO  | TODO   |
-| Mon, 11/23 | Midterm Project Proposal Due                                                    | TODO  | TODO   |
-| Fri, 11/27 | Implement single-qubit transformation rewrites via propagation of altered gates | TODO  | TODO   |
-| Mon, 11/30 | Outline kernel/host plan for Rotation merging                                   | TODO  | TODO   |
-| Wed, 12/2  | Implement rotation merging                                                      | TODO  | TODO   |
-| Fri, 12/4  | Finish profiling our implementation vs VOQC vs POPQC                            | TODO  | TODO   |
-| Mon, 12/7  | Buffer space for unfinished tasks                                               | TODO  | TODO   |
-| Fri, 12/11 | Project Presentation Day                                                        | TODO  | TODO   |
+| Date       | Action Item Due                                                                 |
+| ---------- | ------------------------------------------------------------------------------- |
+| Fri, 11/6  | Project Idea proposal with Dmitros                                              |
+| Mon, 11/9  | Project Proposal Due                                                            |
+| Wed, 11/11 | Read all of relevant background papers: Nam et al., POPQC, VOQC                 |
+| Fri, 11/13 | Finalize responsibilities of host vs kernels                                    |
+| Mon, 11/16 | Build representation of circuits for CUDA kernels to pass                       |
+| Wed, 11/18 | Hadamard Reduction local rewrite kernel                                         |
+| Fri, 11/20 | Outline single-qubit transformation rewrites                                    |
+| Mon, 11/23 | Midterm Project Proposal Due,                                                   |
+| Fri, 11/27 | Implement single-qubit transformation rewrites via propagation of altered gates |
+| Mon, 11/30 | Outline kernel/host plan for Rotation merging                                   |
+| Wed, 12/2  | Implement rotation merging                                                      |
+| Fri, 12/4  | Finish profiling our implementation vs VOQC vs POPQC                            |
+| Mon, 12/7  | Buffer space for unfinished tasks                                               |
+| Fri, 12/11 | Project Presentation Day                                                        |
 
 ## 15-618 Professor Meeting
 
