@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ page.title | default: site.title | escape }}</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, sans-serif;
+      }
+      body {
+        line-height: 1.6;
+        margin: 0 auto;
+        max-width: 900px;
+        padding: 0 1.25rem 3rem;
+      }
+      header {
+        border-bottom: 1px solid #8886;
+        margin-bottom: 2rem;
+      }
+      nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1.25rem;
+        padding: 1rem 0;
+      }
+      nav a {
+        font-weight: 600;
+      }
+      main {
+        overflow-wrap: anywhere;
+      }
+      img {
+        height: auto;
+        max-width: 100%;
+      }
+      table {
+        border-collapse: collapse;
+        display: block;
+        max-width: 100%;
+        overflow-x: auto;
+      }
+      th,
+      td {
+        border: 1px solid #8888;
+        padding: 0.4rem 0.65rem;
+      }
+      code,
+      pre {
+        font-family: ui-monospace, monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <nav aria-label="Main navigation">
+        <a href="{{ '/' | relative_url }}">Milestone Report</a>
+        {% for path in site.header_pages %} {% assign nav_page = site.pages |
+        where: "path", path | first %} {% if nav_page %}
+        <a href="{{ nav_page.url | relative_url }}"
+          >{{ nav_page.title | escape }}</a
+        >
+        {% endif %} {% endfor %}
+      </nav>
+    </header>
+    <main>{{ content }}</main>
+  </body>
+</html>
