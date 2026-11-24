@@ -44,6 +44,16 @@ its optimized output with the corresponding circuit in `benchmarks/hadamard/expe
 To run the built-in cases plus a single fixture, use
 `./tests/gpu_test benchmarks/hadamard/hpc_positive.qasm`.
 
+Run `make test-commutation` for direct GPU tests of `advance_rz`,
+`advance_cnot`, and partner detection in `match_pair`, plus
+end-to-end cancellation checks. These 71 checks are also included in
+`make test-gpu` and `make test-all`. They cover Figure 5 on page 12 of
+[Nam et al.](https://arxiv.org/pdf/1710.07345), including blocked commutations
+and single-qubit cancellation/rotation merging. An independent small
+statevector simulator checks the full operators up to global phase.
+All 71 checks pass after wiring partner indices through matching and
+application. See
+[test details and initial results](tests/COMMUTATION.md).
 ## Project website
 
 The Jekyll site is authored in Markdown. `index.md` is the midterm project

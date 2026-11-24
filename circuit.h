@@ -14,8 +14,8 @@ struct CircuitView {
   GATE *gate_type;
   // angle = angle_pi[0][gate] * pi + angle_pi[1][gate] (radians)
   float *angle_pi[2];
-  int *qubit_0;
-  int *qubit_1;
+  int *qubit_0; // CNOT control; operand 0 in next_idx/prev_idx.
+  int *qubit_1; // CNOT target; operand 1 in next_idx/prev_idx.
   int *next_idx[2];
   int *prev_idx[2]; /** TODO: need these be initialized to -1? */
   // First gate on each wire, or -1 for an empty wire.
